@@ -18,6 +18,10 @@
 #include <string.h>
 #include <stdlib.h>
 
+#ifdef COS_MEMCACHED
+#include <stdio.h>
+#endif
+
 #define META_SPACE(p) { \
     *p = ' '; \
     p++; \
@@ -2315,7 +2319,9 @@ static void process_watch_command(conn *c, token_t *tokens, const size_t ntokens
             break;
         case LOGGER_ADD_WATCHER_OK:
             conn_set_state(c, conn_watch);
+#ifndef COS_MEMCACHED
             event_del(&c->event);
+#endif
             break;
     }
 }
@@ -2633,7 +2639,9 @@ static void process_lru_crawler_command(conn *c, token_t *tokens, const size_t n
                 //out_string(c, "OK");
                 // TODO: Don't reuse conn_watch here.
                 conn_set_state(c, conn_watch);
+#ifndef COS_MEMCACHED
                 event_del(&c->event);
+#endif
                 break;
             case CRAWLER_RUNNING:
                 out_string(c, "BUSY currently processing crawler request");

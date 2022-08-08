@@ -13,7 +13,11 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <netinet/in.h>
+
+#ifndef COS_MEMCACHED
 #include <event.h>
+#endif
+
 #include <netdb.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -691,8 +695,11 @@ typedef struct io_queue_cb_s {
 typedef struct _mc_resp_bundle mc_resp_bundle;
 typedef struct {
     pthread_t thread_id;        /* unique ID of this thread */
+
+#ifndef COS_MEMCACHED
     struct event_base *base;    /* libevent handle this thread uses */
     struct event notify_event;  /* listen event for notify pipe */
+#endif
 #ifdef HAVE_EVENTFD
     int notify_event_fd;        /* notify counter */
 #else
@@ -796,9 +803,12 @@ struct conn {
     enum conn_states  state;
     enum bin_substates substate;
     rel_time_t last_cmd_time;
+
+#ifndef COS_MEMCACHED
     struct event event;
     short  ev_flags;
     short  which;   /** which events were just triggered */
+#endif
 
     char   *rbuf;   /** buffer to read commands into */
     char   *rcurr;  /** but if we parsed some already, this is where we stopped */
@@ -911,8 +921,13 @@ void conn_io_queue_setup(conn *c);
 io_queue_t *conn_io_queue_get(conn *c, int type);
 io_queue_cb_t *thread_io_queue_get(LIBEVENT_THREAD *t, int type);
 void conn_io_queue_return(io_pending_t *io);
+
 conn *conn_new(const int sfd, const enum conn_states init_state, const int event_flags, const int read_buffer_size,
-    enum network_transport transport, struct event_base *base, void *ssl);
+    enum network_transport transport, 
+#ifndef COS_MEMCACHED
+    struct event_base *base,
+#endif
+    void *ssl);
 
 void conn_worker_readd(conn *c);
 extern int daemonize(int nochdir, int noclose);

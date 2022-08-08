@@ -94,10 +94,17 @@ static void conn_to_str(const conn *c, char *addr, char *svr_addr);
 static void settings_init(void);
 
 /* event handling, network IO */
+#ifndef COS_MEMCACHED
 static void event_handler(const evutil_socket_t fd, const short which, void *arg);
+#endif
+
 static void conn_close(conn *c);
 static void conn_init(void);
+
+#ifndef COS_MEMCACHED
 static bool update_event(conn *c, const int new_flags);
+#endif
+
 static void complete_nread(conn *c);
 
 static void conn_free(conn *c);
@@ -120,7 +127,10 @@ void *ext_storage = NULL;
 /** file scope variables **/
 static conn *listen_conn = NULL;
 static int max_fds;
+
+#ifndef COS_MEMCACHED
 static struct event_base *main_base;
+#endif
 
 enum transmit_result {
     TRANSMIT_COMPLETE,   /** All done writing. */
@@ -154,6 +164,8 @@ static enum transmit_result transmit(conn *c);
  */
 static volatile bool allow_new_conns = true;
 static int stop_main_loop = NOT_STOP;
+
+#ifndef COS_MEMCACHED
 static struct event maxconnsevent;
 static void maxconns_handler(const evutil_socket_t fd, const short which, void *arg) {
     struct timeval t = {.tv_sec = 0, .tv_usec = 10000};
@@ -168,6 +180,7 @@ static void maxconns_handler(const evutil_socket_t fd, const short which, void *
         accept_new_conns(true);
     }
 }
+#endif
 
 /*
  * given time value that's either unix time or delta from current unix time, return
@@ -543,6 +556,8 @@ void conn_worker_readd(conn *c) {
             return;
         }
     }
+
+#ifndef COS_MEMCACHED
     c->ev_flags = EV_READ | EV_PERSIST;
     event_set(&c->event, c->sfd, c->ev_flags, event_handler, (void *)c);
     event_base_set(c->thread->base, &c->event);
@@ -551,6 +566,7 @@ void conn_worker_readd(conn *c) {
     if (event_add(&c->event, 0) == -1) {
         perror("event_add");
     }
+#endif
 
     // side thread wanted us to close immediately.
     if (c->state == conn_closing) {
@@ -646,7 +662,10 @@ void conn_io_queue_return(io_pending_t *io) {
 conn *conn_new(const int sfd, enum conn_states init_state,
                 const int event_flags,
                 const int read_buffer_size, enum network_transport transport,
-                struct event_base *base, void *ssl) {
+#ifndef COS_MEMCACHED
+                struct event_base *base, 
+#endif
+                void *ssl) {
     conn *c;
 
     assert(sfd >= 0 && sfd < max_fds);
@@ -810,6 +829,7 @@ conn *conn_new(const int sfd, enum conn_states init_state,
         }
     }
 
+#ifndef COS_MEMCACHED
     event_set(&c->event, sfd, event_flags, event_handler, (void *)c);
     event_base_set(base, &c->event);
     c->ev_flags = event_flags;
@@ -818,6 +838,7 @@ conn *conn_new(const int sfd, enum conn_states init_state,
         perror("event_add");
         return NULL;
     }
+#endif
 
     STATS_LOCK();
     stats_state.curr_conns++;
@@ -915,8 +936,10 @@ static void conn_close(conn *c) {
                 c->close_reason, c->sfd);
     }
 
+#ifndef COS_MEMCACHED
     /* delete the event, the socket and the conn */
     event_del(&c->event);
+#endif 
 
     if (settings.verbose > 1)
         fprintf(stderr, "<%d connection closed.\n", c->sfd);
@@ -1765,7 +1788,11 @@ void server_stats(ADD_STAT add_stats, conn *c) {
     APPEND_STAT("uptime", "%u", now - ITEM_UPDATE_INTERVAL);
     APPEND_STAT("time", "%ld", now + (long)process_started);
     APPEND_STAT("version", "%s", VERSION);
+
+#ifndef COS_MEMCACHED
     APPEND_STAT("libevent", "%s", event_get_version());
+#endif
+
     APPEND_STAT("pointer_size", "%d", (int)(8 * sizeof(void *)));
 
 #ifndef WIN32
@@ -2482,6 +2509,7 @@ static enum try_read_result try_read_network(conn *c) {
     return gotdata;
 }
 
+#ifndef COS_MEMCACHED
 static bool update_event(conn *c, const int new_flags) {
     assert(c != NULL);
 
@@ -2495,6 +2523,7 @@ static bool update_event(conn *c, const int new_flags) {
     if (event_add(&c->event, 0) == -1) return false;
     return true;
 }
+#endif
 
 /*
  * Sets whether we are listening for new connections or not.
@@ -2502,6 +2531,7 @@ static bool update_event(conn *c, const int new_flags) {
 void do_accept_new_conns(const bool do_accept) {
     conn *next;
 
+#ifndef COS_MEMCACHED
     for (next = listen_conn; next; next = next->next) {
         if (do_accept) {
             update_event(next, EV_READ | EV_PERSIST);
@@ -2516,6 +2546,7 @@ void do_accept_new_conns(const bool do_accept) {
             }
         }
     }
+#endif
 
     if (do_accept) {
         struct timeval maxconns_exited;
@@ -2535,7 +2566,9 @@ void do_accept_new_conns(const bool do_accept) {
         stats.listen_disabled_num++;
         STATS_UNLOCK();
         allow_new_conns = false;
+#ifndef COS_MEMCACHED
         maxconns_handler(-42, 0, 0);
+#endif
     }
 }
 
@@ -2707,12 +2740,14 @@ static enum transmit_result transmit(conn *c) {
     }
 
     if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+#ifndef COS_MEMCACHED
         if (!update_event(c, EV_WRITE | EV_PERSIST)) {
             if (settings.verbose > 0)
                 fprintf(stderr, "Couldn't update event\n");
             conn_set_state(c, conn_closing);
             return TRANSMIT_HARD_ERROR;
         }
+#endif
         return TRANSMIT_SOFT_ERROR;
     }
     /* if res == -1 and error is not EAGAIN or EWOULDBLOCK,
@@ -2846,12 +2881,14 @@ static enum transmit_result transmit_udp(conn *c) {
     }
 
     if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+#ifndef COS_MEMCACHED
         if (!update_event(c, EV_WRITE | EV_PERSIST)) {
             if (settings.verbose > 0)
                 fprintf(stderr, "Couldn't update event\n");
             conn_set_state(c, conn_closing);
             return TRANSMIT_HARD_ERROR;
         }
+#endif
         return TRANSMIT_SOFT_ERROR;
     }
     /* if res == -1 and error is not EAGAIN or EWOULDBLOCK,
@@ -3074,12 +3111,14 @@ static void drive_machine(conn *c) {
 
         case conn_waiting:
             rbuf_release(c);
+#ifndef COS_MEMCACHED
             if (!update_event(c, EV_READ | EV_PERSIST)) {
                 if (settings.verbose > 0)
                     fprintf(stderr, "Couldn't update event\n");
                 conn_set_state(c, conn_closing);
                 break;
             }
+#endif
 
             conn_set_state(c, conn_read);
             stop = true;
@@ -3150,12 +3189,14 @@ static void drive_machine(conn *c) {
                        hack we should just put in a request to write data,
                        because that should be possible ;-)
                     */
+#ifndef COS_MEMCACHED
                     if (!update_event(c, EV_WRITE | EV_PERSIST)) {
                         if (settings.verbose > 0)
                             fprintf(stderr, "Couldn't update event\n");
                         conn_set_state(c, conn_closing);
                         break;
                     }
+#endif
                 }
                 stop = true;
             }
@@ -3216,12 +3257,14 @@ static void drive_machine(conn *c) {
             }
 
             if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+#ifndef COS_MEMCACHED
                 if (!update_event(c, EV_READ | EV_PERSIST)) {
                     if (settings.verbose > 0)
                         fprintf(stderr, "Couldn't update event\n");
                     conn_set_state(c, conn_closing);
                     break;
                 }
+#endif
                 stop = true;
                 break;
             }
@@ -3281,12 +3324,14 @@ static void drive_machine(conn *c) {
                 break;
             }
             if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+#ifndef COS_MEMCACHED
                 if (!update_event(c, EV_READ | EV_PERSIST)) {
                     if (settings.verbose > 0)
                         fprintf(stderr, "Couldn't update event\n");
                     conn_set_state(c, conn_closing);
                     break;
                 }
+#endif
                 stop = true;
                 break;
             }
@@ -3313,7 +3358,9 @@ static void drive_machine(conn *c) {
             }
             if (c->io_queues_submitted != 0) {
                 conn_set_state(c, conn_io_queue);
+#ifndef COS_MEMCACHED
                 event_del(&c->event);
+#endif
 
                 stop = true;
                 break;
@@ -3376,6 +3423,7 @@ static void drive_machine(conn *c) {
     return;
 }
 
+#ifndef COS_MEMCACHED
 void event_handler(const evutil_socket_t fd, const short which, void *arg) {
     conn *c;
 
@@ -3397,6 +3445,7 @@ void event_handler(const evutil_socket_t fd, const short which, void *arg) {
     /* wait for next event */
     return;
 }
+#endif
 
 static int new_socket(struct addrinfo *ai) {
     int sfd;
@@ -3613,7 +3662,11 @@ static int server_socket(const char *interface,
         } else {
             if (!(listen_conn_add = conn_new(sfd, conn_listening,
                                              EV_READ | EV_PERSIST, 1,
-                                             transport, main_base, NULL))) {
+                                             transport, 
+#ifndef COS_MEMCACHED
+                                             main_base,
+#endif
+                                             NULL))) {
                 fprintf(stderr, "failed to create listening connection\n");
                 exit(EXIT_FAILURE);
             }
@@ -3792,7 +3845,11 @@ static int server_socket_unix(const char *path, int access_mask) {
     }
     if (!(listen_conn = conn_new(sfd, conn_listening,
                                  EV_READ | EV_PERSIST, 1,
-                                 local_transport, main_base, NULL))) {
+                                 local_transport,
+#ifndef COS_MEMCACHED
+                                 main_base,
+#endif
+                                 NULL))) {
         fprintf(stderr, "failed to create listening connection\n");
         exit(EXIT_FAILURE);
     }
@@ -3812,7 +3869,11 @@ static int server_socket_unix(const char *path, int access_mask) {
  * sizeof(time_t) > sizeof(unsigned int).
  */
 volatile rel_time_t current_time;
+
+#ifndef COS_MEMCACHED
 static struct event clockevent;
+#endif
+
 #ifdef MEMCACHED_DEBUG
 volatile bool is_paused;
 volatile int64_t delta;
@@ -3822,6 +3883,7 @@ static bool monotonic = false;
 static int64_t monotonic_start;
 #endif
 
+#ifndef COS_MEMCACHED
 /* libevent uses a monotonic clock when available for event scheduling. Aside
  * from jitter, simply ticking our internal timer here is accurate enough.
  * Note that users who are setting explicit dates for expiration times *must*
@@ -3884,6 +3946,7 @@ static void clock_handler(const evutil_socket_t fd, const short which, void *arg
 #endif
     }
 }
+#endif
 
 static const char* flag_enabled_disabled(bool flag) {
     return (flag ? "enabled" : "disabled");
@@ -4321,6 +4384,7 @@ static int enable_large_pages(void) {
  * @return true if no errors found, false if we can't use this env
  */
 static bool sanitycheck(void) {
+#ifndef COS_MEMCACHED
     /* One of our biggest problems is old and bogus libevents */
     const char *ever = event_get_version();
     if (ever != NULL) {
@@ -4330,6 +4394,7 @@ static bool sanitycheck(void) {
             return false;
         }
     }
+#endif
 
     return true;
 }
@@ -5853,6 +5918,7 @@ int main (int argc, char **argv) {
 #endif
     }
 
+#ifndef COS_MEMCACHED
     /* initialize main thread libevent instance */
 #if defined(LIBEVENT_VERSION_NUMBER) && LIBEVENT_VERSION_NUMBER >= 0x02000101
     /* If libevent version is larger/equal to 2.0.2-alpha, use newer version */
@@ -5864,6 +5930,7 @@ int main (int argc, char **argv) {
 #else
     /* Otherwise, use older API */
     main_base = event_init();
+#endif
 #endif
 
     /* Load initial auth file if required */
@@ -6045,7 +6112,10 @@ int main (int argc, char **argv) {
         }
     }
 #endif
+
+#ifndef COS_MEMCACHED
     clock_handler(0, 0, 0);
+#endif
 
     /* create unix mode sockets after dropping privileges */
     if (settings.socketpath != NULL) {
@@ -6138,10 +6208,12 @@ int main (int argc, char **argv) {
 
     /* enter the event loop */
     while (!stop_main_loop) {
+#ifndef COS_MEMCACHED
         if (event_base_loop(main_base, EVLOOP_ONCE) != 0) {
             retval = EXIT_FAILURE;
             break;
         }
+#endif
     }
 
     switch (stop_main_loop) {
@@ -6169,7 +6241,9 @@ int main (int argc, char **argv) {
       free(settings.inter);
 
     /* cleanup base */
+#ifndef COS_MEMCACHED
     event_base_free(main_base);
+#endif
 
     free(meta);
 

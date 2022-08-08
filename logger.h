@@ -2,6 +2,10 @@
 #ifndef LOGGER_H
 #define LOGGER_H
 
+#ifdef COS_MEMCACHED
+#include <stdarg.h>
+#endif
+
 #include "bipbuffer.h"
 
 /* TODO: starttime tunable */

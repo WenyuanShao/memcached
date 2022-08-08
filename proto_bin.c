@@ -13,6 +13,10 @@
 #include <string.h>
 #include <stdlib.h>
 
+#ifdef COS_MEMCACHED
+#include <stdio.h>
+#endif
+
 /** binprot handlers **/
 static void process_bin_flush(conn *c, char *extbuf);
 static void process_bin_append_prepend(conn *c);

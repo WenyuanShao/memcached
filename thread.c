@@ -106,7 +106,9 @@ static void notify_worker_fd(LIBEVENT_THREAD *t, int sfd, enum conn_queue_item_m
 static CQ_ITEM *cqi_new(CQ *cq);
 static void cq_push(CQ *cq, CQ_ITEM *item);
 
+#ifndef COS_MEMCACHED
 static void thread_libevent_process(evutil_socket_t fd, short which, void *arg);
+#endif
 
 /* item_lock() must be held for an item before any modifications to either its
  * associated hash bucket, or the structure itself.
@@ -401,6 +403,7 @@ void accept_new_conns(const bool do_accept) {
  * Set up a thread's information.
  */
 static void setup_thread(LIBEVENT_THREAD *me) {
+#ifndef COS_MEMCACHED
 #if defined(LIBEVENT_VERSION_NUMBER) && LIBEVENT_VERSION_NUMBER >= 0x02000101
     struct event_config *ev_config;
     ev_config = event_config_new();
@@ -430,6 +433,7 @@ static void setup_thread(LIBEVENT_THREAD *me) {
         fprintf(stderr, "Can't monitor libevent notify pipe\n");
         exit(1);
     }
+#endif
 
     me->ev_queue = malloc(sizeof(struct conn_queue));
     if (me->ev_queue == NULL) {
@@ -515,12 +519,17 @@ static void *worker_libevent(void *arg) {
 
     register_thread_initialized();
 
+#ifndef COS_MEMCACHED
     event_base_loop(me->base, 0);
+#endif
 
     // same mechanism used to watch for all threads exiting.
     register_thread_initialized();
 
+#ifndef COS_MEMCACHED
     event_base_free(me->base);
+#endif
+
     return NULL;
 }
 
@@ -532,6 +541,7 @@ static void *worker_libevent(void *arg) {
 // Syscalls can be expensive enough that handling a few of them once here can
 // save both throughput and overall latency.
 #define MAX_PIPE_EVENTS 32
+#ifndef COS_MEMCACHED
 static void thread_libevent_process(evutil_socket_t fd, short which, void *arg) {
     LIBEVENT_THREAD *me = arg;
     CQ_ITEM *item;
@@ -626,6 +636,7 @@ static void thread_libevent_process(evutil_socket_t fd, short which, void *arg) 
         cqi_free(me->ev_queue, item);
     }
 }
+#endif
 
 // NOTE: need better encapsulation.
 // used by the proxy module to iterate the worker threads.
