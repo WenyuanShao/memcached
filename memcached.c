@@ -3102,8 +3102,13 @@ static void drive_machine(conn *c) {
                 ssl_v = (void*) ssl;
 #endif
 
-                dispatch_conn_new(sfd, conn_new_cmd, EV_READ | EV_PERSIST,
-                                     READ_BUFFER_CACHED, c->transport, ssl_v);
+                dispatch_conn_new(sfd, conn_new_cmd,
+#ifdef COS_MEMCACHED
+                0,
+#else
+                EV_READ | EV_PERSIST,
+#endif
+                READ_BUFFER_CACHED, c->transport, ssl_v);
             }
 
             stop = true;
@@ -3656,12 +3661,21 @@ static int server_socket(const char *interface,
                     }
                 }
                 dispatch_conn_new(per_thread_fd, conn_read,
-                                  EV_READ | EV_PERSIST,
-                                  UDP_READ_BUFFER_SIZE, transport, NULL);
+#ifdef COS_MEMCACHED
+                0,
+#else
+                EV_READ | EV_PERSIST,
+#endif
+                UDP_READ_BUFFER_SIZE, transport, NULL);
             }
         } else {
             if (!(listen_conn_add = conn_new(sfd, conn_listening,
-                                             EV_READ | EV_PERSIST, 1,
+#ifdef COS_MEMCACHED
+                                             0,
+#else
+                                             EV_READ | EV_PERSIST,
+#endif
+                                             1,
                                              transport, 
 #ifndef COS_MEMCACHED
                                              main_base,
@@ -3844,7 +3858,12 @@ static int server_socket_unix(const char *path, int access_mask) {
         return 1;
     }
     if (!(listen_conn = conn_new(sfd, conn_listening,
-                                 EV_READ | EV_PERSIST, 1,
+#ifdef COS_MEMCACHED
+                                 0,
+#else
+                                 EV_READ | EV_PERSIST,
+#endif
+                                 1,
                                  local_transport,
 #ifndef COS_MEMCACHED
                                  main_base,
@@ -4727,7 +4746,7 @@ static int _mc_meta_load_cb(const char *tag, void *ctx, void *data) {
     return reuse_mmap;
 }
 
-int main (int argc, char **argv) {
+int mc_main (int argc, char **argv) {
     int c;
     bool lock_memory = false;
     bool do_daemonize = false;
