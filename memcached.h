@@ -14,7 +14,9 @@
 #include <sys/time.h>
 #include <netinet/in.h>
 
-#ifndef COS_MEMCACHED
+#ifdef COS_MEMCACHED
+#include "../cos_adapter/cos_mc_adapter.h"
+#else
 #include <event.h>
 #endif
 
@@ -807,8 +809,8 @@ struct conn {
 #ifndef COS_MEMCACHED
     struct event event;
     short  ev_flags;
-    short  which;   /** which events were just triggered */
 #endif
+    short  which;   /** which events were just triggered */
 
     char   *rbuf;   /** buffer to read commands into */
     char   *rcurr;  /** but if we parsed some already, this is where we stopped */

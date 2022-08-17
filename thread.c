@@ -106,9 +106,7 @@ static void notify_worker_fd(LIBEVENT_THREAD *t, int sfd, enum conn_queue_item_m
 static CQ_ITEM *cqi_new(CQ *cq);
 static void cq_push(CQ *cq, CQ_ITEM *item);
 
-#ifndef COS_MEMCACHED
 static void thread_libevent_process(evutil_socket_t fd, short which, void *arg);
-#endif
 
 /* item_lock() must be held for an item before any modifications to either its
  * associated hash bucket, or the structure itself.
@@ -339,6 +337,9 @@ static void cqi_free(CQ *cq, CQ_ITEM *item) {
 // much that will transfer from a synthetic benchmark.
 static void notify_worker(LIBEVENT_THREAD *t, CQ_ITEM *item) {
     cq_push(t->ev_queue, item);
+#ifdef COS_MEMCACHED
+    return;
+#endif
 #ifdef HAVE_EVENTFD
     uint64_t u = 1;
     if (write(t->notify_event_fd, &u, sizeof(uint64_t)) != sizeof(uint64_t)) {
@@ -541,7 +542,6 @@ static void *worker_libevent(void *arg) {
 // Syscalls can be expensive enough that handling a few of them once here can
 // save both throughput and overall latency.
 #define MAX_PIPE_EVENTS 32
-#ifndef COS_MEMCACHED
 static void thread_libevent_process(evutil_socket_t fd, short which, void *arg) {
     LIBEVENT_THREAD *me = arg;
     CQ_ITEM *item;
@@ -558,8 +558,11 @@ static void thread_libevent_process(evutil_socket_t fd, short which, void *arg) 
     }
 #else
     char buf[MAX_PIPE_EVENTS];
-
+#ifdef COS_MEMCACHED
+    ev_count = 1;
+#else
     ev_count = read(fd, buf, MAX_PIPE_EVENTS);
+#endif
     if (ev_count == 0) {
         if (settings.verbose > 0)
             fprintf(stderr, "Can't read from libevent pipe\n");
@@ -577,7 +580,10 @@ static void thread_libevent_process(evutil_socket_t fd, short which, void *arg) 
             case queue_new_conn:
                 c = conn_new(item->sfd, item->init_state, item->event_flags,
                                    item->read_buffer_size, item->transport,
-                                   me->base, item->ssl);
+#ifndef COS_MEMCACHED
+                                   me->base,
+#endif
+                                   item->ssl);
                 if (c == NULL) {
                     if (IS_UDP(item->transport)) {
                         fprintf(stderr, "Can't listen for events on UDP socket\n");
@@ -620,7 +626,9 @@ static void thread_libevent_process(evutil_socket_t fd, short which, void *arg) 
                 break;
             case queue_stop:
                 /* asked to stop */
+#ifndef COS_MEMCACHED
                 event_base_loopexit(me->base, NULL);
+#endif
                 break;
             case queue_return_io:
                 /* getting an individual IO object back */
@@ -636,7 +644,6 @@ static void thread_libevent_process(evutil_socket_t fd, short which, void *arg) 
         cqi_free(me->ev_queue, item);
     }
 }
-#endif
 
 // NOTE: need better encapsulation.
 // used by the proxy module to iterate the worker threads.
@@ -1066,6 +1073,7 @@ void memcached_thread_init(int nthreads, void *arg) {
     }
 
     for (i = 0; i < nthreads; i++) {
+#ifndef COS_MEMCACHED
 #ifdef HAVE_EVENTFD
         threads[i].notify_event_fd = eventfd(0, EFD_NONBLOCK);
         if (threads[i].notify_event_fd == -1) {
@@ -1085,19 +1093,32 @@ void memcached_thread_init(int nthreads, void *arg) {
 #ifdef EXTSTORE
         threads[i].storage = arg;
 #endif
+#endif
         setup_thread(&threads[i]);
         /* Reserve three fds for the libevent base, and two for the pipe */
         stats_state.reserved_fds += 5;
     }
-
+#ifndef COS_MEMCACHED
     /* Create threads after we've done all the libevent setup. */
     for (i = 0; i < nthreads; i++) {
         create_worker(worker_libevent, &threads[i]);
     }
-
     /* Wait for all the threads to set themselves up before returning. */
     pthread_mutex_lock(&init_lock);
     wait_for_thread_registration(nthreads);
     pthread_mutex_unlock(&init_lock);
+#endif
 }
 
+#ifdef COS_MEMCACHED
+void cos_mc_establish_conn(void *arg)
+{
+	thread_libevent_process(0, 0, arg);
+}
+
+void
+cos_mc_init_thd(LIBEVENT_THREAD *thd)
+{
+	worker_libevent(thd);
+}
+#endif

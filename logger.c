@@ -810,9 +810,11 @@ void logger_init(void) {
     logger_stack_tail = 0;
     pthread_key_create(&logger_key, NULL);
 
+#ifndef COS_MEMCACHED
     if (start_logger_thread() != 0) {
         abort();
     }
+#endif
 
     /* This is what adding a STDERR watcher looks like. should replace old
      * "verbose" settings. */

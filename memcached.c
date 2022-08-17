@@ -473,6 +473,9 @@ bool rbuf_switch_to_malloc(conn *c) {
  * being able to directly index the conns array by FD.
  */
 static void conn_init(void) {
+#ifdef COS_MEMCACHED
+    max_fds = settings.maxconns;
+#else
     /* We're unlikely to see an FD much higher than maxconns. */
     int next_fd = dup(1);
     if (next_fd < 0) {
@@ -493,6 +496,7 @@ static void conn_init(void) {
     }
 
     close(next_fd);
+#endif
 
     if ((conns = calloc(max_fds, sizeof(conn *))) == NULL) {
         fprintf(stderr, "Failed to allocate connection structures\n");
@@ -723,11 +727,16 @@ conn *conn_new(const int sfd, enum conn_states init_state,
     }
 
     if (transport == tcp_transport && init_state == conn_new_cmd) {
+#ifdef COS_MEMCACHED
+        cos_getpeername(sfd, (struct sockaddr *) &c->request_addr,
+                        &c->request_addr_size );
+#else
         if (getpeername(sfd, (struct sockaddr *) &c->request_addr,
                         &c->request_addr_size)) {
             perror("getpeername");
             memset(&c->request_addr, 0, sizeof(c->request_addr));
         }
+#endif
     }
 
     if (init_state == conn_new_cmd) {
@@ -3004,6 +3013,9 @@ static void drive_machine(conn *c) {
 
         switch(c->state) {
         case conn_listening:
+#ifdef COS_MEMCACHED
+            
+#else
             addrlen = sizeof(addr);
 #ifdef HAVE_ACCEPT4
             if (use_accept4) {
@@ -3101,16 +3113,10 @@ static void drive_machine(conn *c) {
                 }
                 ssl_v = (void*) ssl;
 #endif
-
-                dispatch_conn_new(sfd, conn_new_cmd,
-#ifdef COS_MEMCACHED
-                0,
-#else
-                EV_READ | EV_PERSIST,
-#endif
-                READ_BUFFER_CACHED, c->transport, ssl_v);
+                dispatch_conn_new(sfd, conn_new_cmd, EV_READ | EV_PERSIST,
+                                     READ_BUFFER_CACHED, c->transport, ssl_v);
             }
-
+#endif
             stop = true;
             break;
 
@@ -3428,7 +3434,7 @@ static void drive_machine(conn *c) {
     return;
 }
 
-#ifndef COS_MEMCACHED
+
 void event_handler(const evutil_socket_t fd, const short which, void *arg) {
     conn *c;
 
@@ -3450,7 +3456,6 @@ void event_handler(const evutil_socket_t fd, const short which, void *arg) {
     /* wait for next event */
     return;
 }
-#endif
 
 static int new_socket(struct addrinfo *ai) {
     int sfd;
@@ -3537,6 +3542,50 @@ static int server_socket(const char *interface,
     if (port == -1) {
         port = 0;
     }
+
+#ifdef COS_MEMCACHED
+    success = 1;
+    sfd = COS_MC_LISTEN_FD;
+    conn *listen_conn_add;
+
+    if (IS_UDP(transport)) {
+        int c;
+
+        for (c = 0; c < settings.num_threads_per_udp; c++) {
+            /* Allocate one UDP file descriptor per worker thread;
+            * this allows "stats conns" to separately list multiple
+            * parallel UDP requests in progress.
+            *
+            * The dispatch code round-robins new connection requests
+            * among threads, so this is guaranteed to assign one
+            * FD to each thread.
+            */
+                int per_thread_fd;
+                if (c == 0) {
+                    per_thread_fd = sfd;
+                } else {
+                    per_thread_fd = dup(sfd);
+                    if (per_thread_fd < 0) {
+                        perror("Failed to duplicate file descriptor");
+                        exit(EXIT_FAILURE);
+                    }
+                }
+                dispatch_conn_new(per_thread_fd, conn_read, 0, UDP_READ_BUFFER_SIZE, transport, NULL);
+        }
+    } else {
+        if (!(listen_conn_add = conn_new(sfd, conn_listening, 0, 1, transport, NULL))) {
+            fprintf(stderr, "failed to create listening connection\n");
+            exit(EXIT_FAILURE);
+        }
+#ifdef TLS
+        listen_conn_add->ssl_enabled = ssl_enabled;
+#else
+        assert(ssl_enabled == false);
+#endif
+        listen_conn_add->next = listen_conn;
+        listen_conn = listen_conn_add;
+    }
+#else
     snprintf(port_buf, sizeof(port_buf), "%d", port);
     error= getaddrinfo(interface, port_buf, &hints, &ai);
     if (error != 0) {
@@ -3661,26 +3710,13 @@ static int server_socket(const char *interface,
                     }
                 }
                 dispatch_conn_new(per_thread_fd, conn_read,
-#ifdef COS_MEMCACHED
-                0,
-#else
-                EV_READ | EV_PERSIST,
-#endif
-                UDP_READ_BUFFER_SIZE, transport, NULL);
+                                  EV_READ | EV_PERSIST,
+                                  UDP_READ_BUFFER_SIZE, transport, NULL);
             }
         } else {
             if (!(listen_conn_add = conn_new(sfd, conn_listening,
-#ifdef COS_MEMCACHED
-                                             0,
-#else
-                                             EV_READ | EV_PERSIST,
-#endif
-                                             1,
-                                             transport, 
-#ifndef COS_MEMCACHED
-                                             main_base,
-#endif
-                                             NULL))) {
+                                             EV_READ | EV_PERSIST, 1,
+                                             transport, main_base, NULL))) {
                 fprintf(stderr, "failed to create listening connection\n");
                 exit(EXIT_FAILURE);
             }
@@ -3696,6 +3732,7 @@ static int server_socket(const char *interface,
 
     freeaddrinfo(ai);
 
+#endif
     /* Return zero iff we detected no errors in starting up connections */
     return success == 0;
 }
@@ -4903,11 +4940,13 @@ int mc_main (int argc, char **argv) {
         return EX_OSERR;
     }
 
+#ifndef COS_MEMCACHED
     /* handle SIGINT, SIGTERM */
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
     signal(SIGHUP, sighup_handler);
     signal(SIGUSR1, sig_usrhandler);
+#endif
 
     /* init settings */
     settings_init();
@@ -5862,7 +5901,7 @@ int mc_main (int argc, char **argv) {
      * If needed, increase rlimits to allow as many connections
      * as needed.
      */
-
+#ifndef COS_MEMCACHED
     if (getrlimit(RLIMIT_NOFILE, &rlim) != 0) {
         fprintf(stderr, "failed to getrlimit number of files\n");
         exit(EX_OSERR);
@@ -5906,7 +5945,7 @@ int mc_main (int argc, char **argv) {
             exit(EX_OSERR);
         }
     }
-
+#endif
     /* Initialize Sasl if -S was specified */
     if (settings.sasl) {
         init_sasl();
@@ -6050,6 +6089,8 @@ int mc_main (int argc, char **argv) {
         // insane.
         restart_fixup((void *)old_base);
     }
+
+#ifndef COS_MEMCACHED
     /*
      * ignore SIGPIPE signals; we can use errno == EPIPE if we
      * need that information
@@ -6058,6 +6099,7 @@ int mc_main (int argc, char **argv) {
         perror("failed to ignore SIGPIPE; sigaction");
         exit(EX_OSERR);
     }
+#endif
     /* start up worker threads if MT mode */
 #ifdef PROXY
     if (settings.proxy_enabled) {
@@ -6227,7 +6269,9 @@ int mc_main (int argc, char **argv) {
 
     /* enter the event loop */
     while (!stop_main_loop) {
-#ifndef COS_MEMCACHED
+#ifdef COS_MEMCACHED
+	return 0;
+#else
         if (event_base_loop(main_base, EVLOOP_ONCE) != 0) {
             retval = EXIT_FAILURE;
             break;
@@ -6268,3 +6312,16 @@ int mc_main (int argc, char **argv) {
 
     return retval;
 }
+
+#ifdef COS_MEMCACHED
+void cos_mc_event_handler(const int fd, void *arg)
+{
+	event_handler(fd, 0, arg);
+}
+
+conn* cos_mc_get_conn(const int fd)
+{
+	assert(fd >= 0 && fd < max_fds);
+	return conns[fd];
+}
+#endif
