@@ -4782,8 +4782,11 @@ static int _mc_meta_load_cb(const char *tag, void *ctx, void *data) {
 
     return reuse_mmap;
 }
-
-int mc_main (int argc, char **argv) {
+#ifdef COS_MEMCACHED
+int cos_mc_main (int argc, char **argv) {
+#else
+int main (int argc, char **argv) {
+#endif
     int c;
     bool lock_memory = false;
     bool do_daemonize = false;
