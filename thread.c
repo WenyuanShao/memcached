@@ -735,11 +735,14 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
     CQ_ITEM *item = NULL;
     LIBEVENT_THREAD *thread;
 
+#ifdef COS_MEMCACHED
+	thread = cos_select_thd();
+#else
     if (!settings.num_napi_ids)
         thread = select_thread_round_robin();
     else
         thread = select_thread_by_napi_id(sfd);
-
+#endif
     item = cqi_new(thread->ev_queue);
     if (item == NULL) {
         close(sfd);

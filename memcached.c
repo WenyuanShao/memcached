@@ -2413,9 +2413,13 @@ static enum try_read_result try_read_udp(conn *c) {
     assert(c != NULL);
 
     c->request_addr_size = sizeof(c->request_addr);
+#ifdef COS_MEMCACHED
+    res = cos_recvfrom(c);
+#else
     res = recvfrom(c->sfd, c->rbuf, c->rsize,
                    0, (struct sockaddr *)&c->request_addr,
                    &c->request_addr_size);
+#endif
     if (res > 8) {
         unsigned char *buf = (unsigned char *)c->rbuf;
         pthread_mutex_lock(&c->thread->stats.mutex);
@@ -2870,7 +2874,11 @@ static enum transmit_result transmit_udp(conn *c) {
     ssize_t res;
     msg.msg_iovlen = iovused;
     // NOTE: uses system sendmsg since we have no support for indirect UDP.
+#ifdef COS_MEMCACHED
+    res = cos_sendmsg(c, &msg, 0);
+#else
     res = sendmsg(c->sfd, &msg, 0);
+#endif
     if (res >= 0) {
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.bytes_written += res;
@@ -3545,46 +3553,6 @@ static int server_socket(const char *interface,
 
 #ifdef COS_MEMCACHED
     success = 1;
-    sfd = COS_MC_LISTEN_FD;
-    conn *listen_conn_add;
-
-    if (IS_UDP(transport)) {
-        int c;
-
-        for (c = 0; c < settings.num_threads_per_udp; c++) {
-            /* Allocate one UDP file descriptor per worker thread;
-            * this allows "stats conns" to separately list multiple
-            * parallel UDP requests in progress.
-            *
-            * The dispatch code round-robins new connection requests
-            * among threads, so this is guaranteed to assign one
-            * FD to each thread.
-            */
-                int per_thread_fd;
-                if (c == 0) {
-                    per_thread_fd = sfd;
-                } else {
-                    per_thread_fd = dup(sfd);
-                    if (per_thread_fd < 0) {
-                        perror("Failed to duplicate file descriptor");
-                        exit(EXIT_FAILURE);
-                    }
-                }
-                dispatch_conn_new(per_thread_fd, conn_read, 0, UDP_READ_BUFFER_SIZE, transport, NULL);
-        }
-    } else {
-        if (!(listen_conn_add = conn_new(sfd, conn_listening, 0, 1, transport, NULL))) {
-            fprintf(stderr, "failed to create listening connection\n");
-            exit(EXIT_FAILURE);
-        }
-#ifdef TLS
-        listen_conn_add->ssl_enabled = ssl_enabled;
-#else
-        assert(ssl_enabled == false);
-#endif
-        listen_conn_add->next = listen_conn;
-        listen_conn = listen_conn_add;
-    }
 #else
     snprintf(port_buf, sizeof(port_buf), "%d", port);
     error= getaddrinfo(interface, port_buf, &hints, &ai);
