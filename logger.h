@@ -202,6 +202,12 @@ void logger_init(void);
 void logger_stop(void);
 logger *logger_create(void);
 
+#ifdef COS_MEMCACHED
+/* Memcached logger uses TLS, we don't support it currently */
+#define LOGGER_LOG(l, flag, type, ...) \
+    do{} while (0);
+    
+#else
 #define LOGGER_LOG(l, flag, type, ...) \
     do { \
         logger *myl = l; \
@@ -210,6 +216,7 @@ logger *logger_create(void);
         if (myl->eflags & flag) \
             logger_log(myl, type, __VA_ARGS__); \
     } while (0)
+#endif
 
 enum logger_ret_type logger_log(logger *l, const enum log_entry_type event, const void *entry, ...);
 

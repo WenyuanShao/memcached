@@ -845,7 +845,10 @@ logger *logger_create(void) {
     l->entry_map = default_entries;
 
     pthread_mutex_init(&l->mutex, NULL);
+
+#ifndef COS_MEMCACHED
     pthread_setspecific(logger_key, l);
+#endif
 
     /* add to list of loggers */
     logger_link_q(l);

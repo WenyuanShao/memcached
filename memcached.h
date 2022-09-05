@@ -872,9 +872,10 @@ struct conn {
     ssize_t (*sendmsg)(conn *c, struct msghdr *msg, int flags);
     ssize_t (*write)(conn *c, void *buf, size_t count);
 #ifdef COS_MEMCACHED
-    unsigned int shm_objid;
-    char* shm_data_offset;
-    u16_t shm_data_sz;
+    char *cos_r_buf; /* Memcached read data from this buffer */
+    u16_t cos_r_sz;
+    char *cos_w_buf; /* Memcached write data back to this buffer */
+    u16_t cos_w_sz;
 #endif
 };
 
