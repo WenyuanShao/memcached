@@ -736,7 +736,7 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
     LIBEVENT_THREAD *thread;
 
 #ifdef COS_MEMCACHED
-	thread = cos_select_thd();
+	thread = (LIBEVENT_THREAD *)cos_select_thd();
 #else
     if (!settings.num_napi_ids)
         thread = select_thread_round_robin();
