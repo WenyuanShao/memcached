@@ -66,22 +66,33 @@ struct conn_queue {
 };
 
 /* Locks for cache LRU operations */
+#ifdef COS_MEMCACHED
+struct sync_lock lru_locks[POWER_LARGEST];
+struct sync_lock conn_lock;
+#else
 pthread_mutex_t lru_locks[POWER_LARGEST];
 
 /* Connection lock around accepting new connections */
 pthread_mutex_t conn_lock = PTHREAD_MUTEX_INITIALIZER;
 
+#endif
 #if !defined(HAVE_GCC_ATOMICS) && !defined(__sun)
 pthread_mutex_t atomics_mutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
 /* Lock for global stats */
+#ifdef COS_MEMCACHED
+static struct sync_lock stats_lock;
+static struct sync_lock *item_locks;
+static struct sync_lock worker_hang_lock;
+#else
 static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Lock to cause worker threads to hang up after being woken */
 static pthread_mutex_t worker_hang_lock;
 
 static pthread_mutex_t *item_locks;
+#endif
 /* size of the item lock hash table */
 static uint32_t item_lock_count;
 unsigned int item_lock_hashpower;
@@ -98,7 +109,11 @@ static LIBEVENT_THREAD *threads;
  * Number of worker threads that have finished setting themselves up.
  */
 static int init_count = 0;
+#ifdef COS_MEMCACHED
+static struct sync_lock  init_lock;       
+#else
 static pthread_mutex_t init_lock;
+#endif
 static pthread_cond_t init_cond;
 
 static void notify_worker(LIBEVENT_THREAD *t, CQ_ITEM *item);
@@ -117,32 +132,65 @@ static void thread_libevent_process(evutil_socket_t fd, short which, void *arg);
  */
 
 void item_lock(uint32_t hv) {
+#ifdef COS_MEMCACHED
+//     cos_printf("try sync lock\n");
+    sync_lock_take(&item_locks[hv & hashmask(item_lock_hashpower)]);
+#else
     mutex_lock(&item_locks[hv & hashmask(item_lock_hashpower)]);
+#endif
 }
 
 void *item_trylock(uint32_t hv) {
+#ifdef COS_MEMCACHED
+    struct sync_lock *lock = &item_locks[hv & hashmask(item_lock_hashpower)];
+    if (sync_lock_try_take(lock) == 0) {
+        return lock;
+    }
+#else
     pthread_mutex_t *lock = &item_locks[hv & hashmask(item_lock_hashpower)];
     if (pthread_mutex_trylock(lock) == 0) {
         return lock;
     }
+#endif
     return NULL;
 }
 
 void item_trylock_unlock(void *lock) {
+#ifdef COS_MEMCACHED
+    sync_lock_release((struct sync_lock *)lock);
+#else
     mutex_unlock((pthread_mutex_t *) lock);
+#endif
 }
 
 void item_unlock(uint32_t hv) {
+#ifdef COS_MEMCACHED
+    sync_lock_release(&item_locks[hv & hashmask(item_lock_hashpower)]);
+#else
     mutex_unlock(&item_locks[hv & hashmask(item_lock_hashpower)]);
+#endif
 }
 
 static void wait_for_thread_registration(int nthreads) {
     while (init_count < nthreads) {
+#ifdef COS_MEMCACHED
+        assert(0);
+#else
         pthread_cond_wait(&init_cond, &init_lock);
+#endif
     }
 }
 
 static void register_thread_initialized(void) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&init_lock);
+    init_count++;
+    pthread_cond_signal(&init_cond);
+    sync_lock_release(&init_lock);
+    /* Force worker threads to pile up if someone wants us to */
+    sync_lock_take(&worker_hang_lock);
+    sync_lock_release(&worker_hang_lock);
+#else
     pthread_mutex_lock(&init_lock);
     init_count++;
     pthread_cond_signal(&init_cond);
@@ -150,6 +198,7 @@ static void register_thread_initialized(void) {
     /* Force worker threads to pile up if someone wants us to */
     pthread_mutex_lock(&worker_hang_lock);
     pthread_mutex_unlock(&worker_hang_lock);
+#endif
 }
 
 /* Must not be called with any deeper locks held */
@@ -168,7 +217,11 @@ void pause_threads(enum pause_thread_types type) {
 #endif
         case PAUSE_WORKER_THREADS:
             pause_workers = true;
+#ifdef COS_MEMCACHED
+            sync_lock_take(&worker_hang_lock);
+#else
             pthread_mutex_lock(&worker_hang_lock);
+#endif
             break;
         case RESUME_ALL_THREADS:
             slabs_rebalancer_resume();
@@ -179,7 +232,11 @@ void pause_threads(enum pause_thread_types type) {
             storage_write_resume();
 #endif
         case RESUME_WORKER_THREADS:
+#ifdef COS_MEMCACHED
+            sync_lock_release(&worker_hang_lock);
+#else
             pthread_mutex_unlock(&worker_hang_lock);
+#endif
             break;
         default:
             fprintf(stderr, "Unknown lock type: %d\n", type);
@@ -191,14 +248,21 @@ void pause_threads(enum pause_thread_types type) {
     if (!pause_workers) {
         return;
     }
-
+#ifdef COS_MEMCACHED
+        sync_lock_take(&init_lock);
+#else
     pthread_mutex_lock(&init_lock);
+#endif
     init_count = 0;
     for (i = 0; i < settings.num_threads; i++) {
         notify_worker_fd(&threads[i], 0, queue_pause);
     }
     wait_for_thread_registration(settings.num_threads);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&init_lock);
+#else
     pthread_mutex_unlock(&init_lock);
+#endif
 }
 
 // MUST not be called with any deeper locks held
@@ -216,14 +280,24 @@ void stop_threads(void) {
     if (settings.verbose > 0)
         fprintf(stderr, "asking workers to stop\n");
 
+#ifdef COS_MEMCACHED
+    sync_lock_take(&worker_hang_lock);
+    sync_lock_take(&init_lock);
+#else
+
     pthread_mutex_lock(&worker_hang_lock);
     pthread_mutex_lock(&init_lock);
+#endif
     init_count = 0;
     for (i = 0; i < settings.num_threads; i++) {
         notify_worker_fd(&threads[i], 0, queue_stop);
     }
     wait_for_thread_registration(settings.num_threads);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&init_lock);
+#else
     pthread_mutex_unlock(&init_lock);
+#endif
 
     // All of the workers are hung but haven't done cleanup yet.
 
@@ -256,7 +330,12 @@ void stop_threads(void) {
     if (settings.verbose > 0)
         fprintf(stderr, "closing connections\n");
     conn_close_all();
+#ifdef COS_MEMCACHED
+    sync_lock_release(&worker_hang_lock);
+#else
+
     pthread_mutex_unlock(&worker_hang_lock);
+#endif
     if (settings.verbose > 0)
         fprintf(stderr, "reaping worker threads\n");
     for (i = 0; i < settings.num_threads; i++) {
@@ -394,9 +473,16 @@ static void create_worker(void *(*func)(void *), void *arg) {
  * Sets whether or not we accept new connections.
  */
 void accept_new_conns(const bool do_accept) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&conn_lock);
+    do_accept_new_conns(do_accept);
+    sync_lock_release(&conn_lock);
+#else
     pthread_mutex_lock(&conn_lock);
     do_accept_new_conns(do_accept);
     pthread_mutex_unlock(&conn_lock);
+#endif
+
 }
 /****************************** LIBEVENT THREADS *****************************/
 
@@ -443,10 +529,18 @@ static void setup_thread(LIBEVENT_THREAD *me) {
     }
     cq_init(me->ev_queue);
 
+#ifdef COS_MEMCACHED
+    if (sync_lock_init(&me->stats.mutex) != 0) {
+        perror("Failed to initialize mutex");
+        exit(EXIT_FAILURE);
+    }
+#else
     if (pthread_mutex_init(&me->stats.mutex, NULL) != 0) {
         perror("Failed to initialize mutex");
         exit(EXIT_FAILURE);
     }
+#endif
+
 
     me->rbuf_cache = cache_create("rbuf", READ_BUFFER_SIZE, sizeof(char *));
     if (me->rbuf_cache == NULL) {
@@ -935,17 +1029,29 @@ enum store_item_type store_item(item *item, int comm, conn* c) {
 /******************************* GLOBAL STATS ******************************/
 
 void STATS_LOCK() {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&stats_lock);
+#else
     pthread_mutex_lock(&stats_lock);
+#endif
 }
 
 void STATS_UNLOCK() {
+#ifdef COS_MEMCACHED
+    sync_lock_release(&stats_lock);
+#else
     pthread_mutex_unlock(&stats_lock);
+#endif
 }
 
 void threadlocal_stats_reset(void) {
     int ii;
     for (ii = 0; ii < settings.num_threads; ++ii) {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&threads[ii].stats.mutex);
+#else
         pthread_mutex_lock(&threads[ii].stats.mutex);
+#endif
 #define X(name) threads[ii].stats.name = 0;
         THREAD_STATS_FIELDS
 #ifdef EXTSTORE
@@ -961,7 +1067,11 @@ void threadlocal_stats_reset(void) {
         memset(&threads[ii].stats.lru_hits, 0,
                 sizeof(uint64_t) * POWER_LARGEST);
 
+#ifdef COS_MEMCACHED
+            sync_lock_release(&threads[ii].stats.mutex);
+#else
         pthread_mutex_unlock(&threads[ii].stats.mutex);
+#endif
     }
 }
 
@@ -973,7 +1083,11 @@ void threadlocal_stats_aggregate(struct thread_stats *stats) {
     memset(stats, 0, sizeof(*stats));
 
     for (ii = 0; ii < settings.num_threads; ++ii) {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&threads[ii].stats.mutex);
+#else
         pthread_mutex_lock(&threads[ii].stats.mutex);
+#endif
 #define X(name) stats->name += threads[ii].stats.name;
         THREAD_STATS_FIELDS
 #ifdef EXTSTORE
@@ -1001,7 +1115,11 @@ void threadlocal_stats_aggregate(struct thread_stats *stats) {
         stats->read_buf_count += threads[ii].rbuf_cache->total;
         stats->read_buf_bytes += threads[ii].rbuf_cache->total * READ_BUFFER_SIZE;
         stats->read_buf_bytes_free += threads[ii].rbuf_cache->freecurr * READ_BUFFER_SIZE;
+#ifdef COS_MEMCACHED
+        sync_lock_release(&threads[ii].stats.mutex);
+#else
         pthread_mutex_unlock(&threads[ii].stats.mutex);
+#endif
     }
 }
 
@@ -1025,15 +1143,24 @@ void slab_stats_aggregate(struct thread_stats *stats, struct slab_stats *out) {
 void memcached_thread_init(int nthreads, void *arg) {
     int         i;
     int         power;
+#ifdef COS_MEMCACHED
+    for (i = 0; i < POWER_LARGEST; i++) {
+        sync_lock_init(&lru_locks[i]);
+    }
+    sync_lock_init(&worker_hang_lock);
 
+    sync_lock_init(&stats_lock);
+    sync_lock_init(&conn_lock);
+    sync_lock_init(&init_lock);
+#else
     for (i = 0; i < POWER_LARGEST; i++) {
         pthread_mutex_init(&lru_locks[i], NULL);
     }
+
     pthread_mutex_init(&worker_hang_lock, NULL);
-
     pthread_mutex_init(&init_lock, NULL);
+#endif
     pthread_cond_init(&init_cond, NULL);
-
     /* Want a wide lock table, but don't waste memory */
     if (nthreads < 3) {
         power = 10;
@@ -1060,13 +1187,22 @@ void memcached_thread_init(int nthreads, void *arg) {
     item_lock_count = hashsize(power);
     item_lock_hashpower = power;
 
+//     cos_printf("initializa item locks\n");
+#ifdef COS_MEMCACHED
+    item_locks = calloc(item_lock_count, sizeof(struct sync_lock));
+#else
     item_locks = calloc(item_lock_count, sizeof(pthread_mutex_t));
+#endif
     if (! item_locks) {
         perror("Can't allocate item locks");
         exit(1);
     }
     for (i = 0; i < item_lock_count; i++) {
+#ifdef COS_MEMCACHED
+        sync_lock_init(&item_locks[i]);
+#else
         pthread_mutex_init(&item_locks[i], NULL);
+#endif
     }
 
     threads = calloc(nthreads, sizeof(LIBEVENT_THREAD));

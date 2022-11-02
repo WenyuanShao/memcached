@@ -19,7 +19,12 @@ cache_t* cache_create(const char *name, size_t bufsize, size_t align) {
     cache_t* ret = calloc(1, sizeof(cache_t));
     char* nm = strdup(name);
     if (ret == NULL || nm == NULL ||
+#ifdef COS_MEMCACHED
+        sync_lock_init(&ret->mutex) == -1) {
+#else
+
         pthread_mutex_init(&ret->mutex, NULL) == -1) {
+#endif
         free(ret);
         free(nm);
         return NULL;
@@ -39,9 +44,15 @@ cache_t* cache_create(const char *name, size_t bufsize, size_t align) {
 }
 
 void cache_set_limit(cache_t *cache, int limit) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&cache->mutex);
+    cache->limit = limit;
+    sync_lock_release(&cache->mutex);
+#else
     pthread_mutex_lock(&cache->mutex);
     cache->limit = limit;
     pthread_mutex_unlock(&cache->mutex);
+#endif
 }
 
 static inline void* get_object(void *ptr) {
@@ -60,15 +71,25 @@ void cache_destroy(cache_t *cache) {
         free(o);
     }
     free(cache->name);
+#ifdef COS_MEMCACHED
+    sync_lock_teardown(&cache->mutex);
+#else
     pthread_mutex_destroy(&cache->mutex);
+#endif
     free(cache);
 }
 
 void* cache_alloc(cache_t *cache) {
     void *ret;
+#ifdef COS_MEMCACHED
+    sync_lock_take(&cache->mutex);
+    ret = do_cache_alloc(cache);
+    sync_lock_release(&cache->mutex);
+#else
     pthread_mutex_lock(&cache->mutex);
     ret = do_cache_alloc(cache);
     pthread_mutex_unlock(&cache->mutex);
+#endif
     return ret;
 }
 
@@ -106,9 +127,15 @@ void* do_cache_alloc(cache_t *cache) {
 }
 
 void cache_free(cache_t *cache, void *ptr) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&cache->mutex);
+    do_cache_free(cache, ptr);
+    sync_lock_release(&cache->mutex);
+#else
     pthread_mutex_lock(&cache->mutex);
     do_cache_free(cache, ptr);
     pthread_mutex_unlock(&cache->mutex);
+#endif
 }
 
 void do_cache_free(cache_t *cache, void *ptr) {

@@ -39,6 +39,20 @@
 #define P_DEBUG(...)
 #endif
 
+#ifdef COS_MEMCACHED
+#define WSTAT_L(t) sync_lock_take(&t->stats.mutex);
+#define WSTAT_UL(t) sync_lock_release(&t->stats.mutex);
+#define WSTAT_INCR(c, stat, amount) { \
+    sync_lock_take(&c->thread->stats.mutex); \
+    c->thread->stats.stat += amount; \
+    sync_lock_release(&c->thread->stats.mutex); \
+}
+#define WSTAT_DECR(c, stat, amount) { \
+    sync_lock_take(&c->thread->stats.mutex); \
+    c->thread->stats.stat -= amount; \
+    sync_lock_release(&c->thread->stats.mutex); \
+}
+#else
 #define WSTAT_L(t) pthread_mutex_lock(&t->stats.mutex);
 #define WSTAT_UL(t) pthread_mutex_unlock(&t->stats.mutex);
 #define WSTAT_INCR(c, stat, amount) { \
@@ -51,6 +65,7 @@
     c->thread->stats.stat -= amount; \
     pthread_mutex_unlock(&c->thread->stats.mutex); \
 }
+#endif
 #define STAT_L(ctx) pthread_mutex_lock(&ctx->stats_lock);
 #define STAT_UL(ctx) pthread_mutex_unlock(&ctx->stats_lock);
 #define STAT_INCR(ctx, stat, amount) { \

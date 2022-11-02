@@ -4,6 +4,9 @@
 #include <pthread.h>
 #include "queue.h"
 
+#ifdef COS_MEMCACHED
+#include <sync_lock.h>
+#endif
 #ifndef NDEBUG
 /* may be used for debug purposes */
 extern int cache_error;
@@ -21,7 +24,11 @@ struct cache_free_s {
  */
 typedef struct {
     /** Mutex to protect access to the structure */
+#ifdef COS_MEMCACHED
+    struct sync_lock mutex;
+#else
     pthread_mutex_t mutex;
+#endif
     /** Name of the cache objects in this cache (provided by the caller) */
     char *name;
     /** freelist of available buffers */

@@ -389,7 +389,11 @@ int proxy_thread_loadconf(LIBEVENT_THREAD *thr) {
     struct proxy_user_stats *us = &ctx->user_stats;
     struct proxy_user_stats *tus = NULL;
     if (us->num_stats != 0) {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&thr->stats.mutex);
+#else
         pthread_mutex_lock(&thr->stats.mutex);
+#endif
         if (thr->proxy_user_stats == NULL) {
             tus = calloc(1, sizeof(struct proxy_user_stats));
             thr->proxy_user_stats = tus;
@@ -411,7 +415,11 @@ int proxy_thread_loadconf(LIBEVENT_THREAD *thr) {
 
         tus->counters = counters;
         tus->num_stats = us->num_stats;
+#ifdef COS_MEMCACHED
+        sync_lock_release(&thr->stats.mutex);
+#else
         pthread_mutex_unlock(&thr->stats.mutex);
+#endif
     }
     STAT_UL(ctx);
 

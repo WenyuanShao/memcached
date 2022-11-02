@@ -343,6 +343,15 @@ static void complete_incr_bin(conn *c, char *extbuf) {
                         "SERVER_ERROR Out of memory allocating new item");
             }
         } else {
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+            if (c->cmd == PROTOCOL_BINARY_CMD_INCREMENT) {
+                c->thread->stats.incr_misses++;
+            } else {
+                c->thread->stats.decr_misses++;
+            }
+            sync_lock_release(&c->thread->stats.mutex);
+#else
             pthread_mutex_lock(&c->thread->stats.mutex);
             if (c->cmd == PROTOCOL_BINARY_CMD_INCREMENT) {
                 c->thread->stats.incr_misses++;
@@ -350,6 +359,7 @@ static void complete_incr_bin(conn *c, char *extbuf) {
                 c->thread->stats.decr_misses++;
             }
             pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
             write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, NULL, 0);
         }
@@ -366,9 +376,16 @@ static void complete_update_bin(conn *c) {
     assert(c != NULL);
 
     item *it = c->item;
+#ifdef COS_MEMCACHED
+    sync_lock_take(&c->thread->stats.mutex);
+    c->thread->stats.slab_stats[ITEM_clsid(it)].set_cmds++;
+    sync_lock_release(&c->thread->stats.mutex);
+#else
     pthread_mutex_lock(&c->thread->stats.mutex);
     c->thread->stats.slab_stats[ITEM_clsid(it)].set_cmds++;
     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
+
 
     /* We don't actually receive the trailing two characters in the bin
      * protocol, so we're going to just set them here */
@@ -489,7 +506,17 @@ static void process_bin_get_or_touch(conn *c, char *extbuf) {
         /* the length has two unnecessary bytes ("\r\n") */
         uint16_t keylen = 0;
         uint32_t bodylen = sizeof(rsp->message.body) + (it->nbytes - 2);
-
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        if (should_touch) {
+            c->thread->stats.touch_cmds++;
+            c->thread->stats.slab_stats[ITEM_clsid(it)].touch_hits++;
+        } else {
+            c->thread->stats.get_cmds++;
+            c->thread->stats.lru_hits[it->slabs_clsid]++;
+        }
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         if (should_touch) {
             c->thread->stats.touch_cmds++;
@@ -499,6 +526,7 @@ static void process_bin_get_or_touch(conn *c, char *extbuf) {
             c->thread->stats.lru_hits[it->slabs_clsid]++;
         }
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
         if (should_touch) {
             MEMCACHED_COMMAND_TOUCH(c->sfd, ITEM_key(it), it->nkey,
@@ -532,9 +560,15 @@ static void process_bin_get_or_touch(conn *c, char *extbuf) {
 #ifdef EXTSTORE
             if (it->it_flags & ITEM_HDR) {
                 if (storage_get_item(c, it, c->resp) != 0) {
+#ifdef COS_MEMCACHED
+                    sync_lock_take(&c->thread->stats.mutex);
+                    c->thread->stats.get_oom_extstore++;
+                    sync_lock_release(&c->thread->stats.mutex);
+#else
                     pthread_mutex_lock(&c->thread->stats.mutex);
                     c->thread->stats.get_oom_extstore++;
                     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
                     failed = true;
                 }
@@ -574,6 +608,17 @@ static void process_bin_get_or_touch(conn *c, char *extbuf) {
     }
 
     if (failed) {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        if (should_touch) {
+            c->thread->stats.touch_cmds++;
+            c->thread->stats.touch_misses++;
+        } else {
+            c->thread->stats.get_cmds++;
+            c->thread->stats.get_misses++;
+        }
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         if (should_touch) {
             c->thread->stats.touch_cmds++;
@@ -583,6 +628,7 @@ static void process_bin_get_or_touch(conn *c, char *extbuf) {
             c->thread->stats.get_misses++;
         }
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
         if (should_touch) {
             MEMCACHED_COMMAND_TOUCH(c->sfd, key, nkey, -1, 0);
@@ -840,9 +886,15 @@ static void process_bin_complete_sasl_auth(conn *c) {
     case SASL_OK:
         c->authenticated = true;
         write_bin_response(c, "Authenticated", 0, 0, strlen("Authenticated"));
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.auth_cmds++;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.auth_cmds++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
         break;
     case SASL_CONTINUE:
         add_bin_header(c, PROTOCOL_BINARY_RESPONSE_AUTH_CONTINUE, 0, 0, outlen);
@@ -856,10 +908,17 @@ static void process_bin_complete_sasl_auth(conn *c) {
         if (settings.verbose)
             fprintf(stderr, "Unknown sasl response:  %d\n", result);
         write_bin_error(c, PROTOCOL_BINARY_RESPONSE_AUTH_ERROR, NULL, 0);
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.auth_cmds++;
+        c->thread->stats.auth_errors++;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.auth_cmds++;
         c->thread->stats.auth_errors++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
     }
 }
 
@@ -1278,10 +1337,15 @@ static void process_bin_flush(conn *c, char *extbuf) {
     } else {
         settings.oldest_live = new_oldest;
     }
-
+#ifdef COS_MEMCACHED
+    sync_lock_take(&c->thread->stats.mutex);
+    c->thread->stats.flush_cmds++;
+    sync_lock_release(&c->thread->stats.mutex);
+#else
     pthread_mutex_lock(&c->thread->stats.mutex);
     c->thread->stats.flush_cmds++;
     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
     write_bin_response(c, NULL, 0, 0, 0);
 }
@@ -1312,9 +1376,16 @@ static void process_bin_delete(conn *c) {
         uint64_t cas = c->binary_header.request.cas;
         if (cas == 0 || cas == ITEM_get_cas(it)) {
             MEMCACHED_COMMAND_DELETE(c->sfd, ITEM_key(it), it->nkey);
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+            c->thread->stats.slab_stats[ITEM_clsid(it)].delete_hits++;
+            sync_lock_release(&c->thread->stats.mutex);
+#else
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.slab_stats[ITEM_clsid(it)].delete_hits++;
             pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
+
             do_item_unlink(it, hv);
             STORAGE_delete(c->thread->storage, it);
             write_bin_response(c, NULL, 0, 0, 0);
@@ -1324,9 +1395,15 @@ static void process_bin_delete(conn *c) {
         do_item_remove(it);      /* release our reference */
     } else {
         write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, NULL, 0);
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.delete_misses++;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.delete_misses++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
     }
     item_unlock(hv);
 }

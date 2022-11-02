@@ -71,9 +71,15 @@ static pthread_mutex_t stats_sizes_lock = PTHREAD_MUTEX_INITIALIZER;
 void item_stats_reset(void) {
     int i;
     for (i = 0; i < LARGEST_ID; i++) {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&lru_locks[i]);
+        memset(&itemstats[i], 0, sizeof(itemstats_t));
+        sync_lock_release(&lru_locks[i]);
+#else
         pthread_mutex_lock(&lru_locks[i]);
         memset(&itemstats[i], 0, sizeof(itemstats_t));
         pthread_mutex_unlock(&lru_locks[i]);
+#endif
     }
 }
 
@@ -205,9 +211,15 @@ item *do_item_alloc_pull(const size_t ntotal, const unsigned int id) {
     }
 
     if (i > 0) {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&lru_locks[id]);
+        itemstats[id].direct_reclaims += i;
+        sync_lock_release(&lru_locks[id]);
+#else
         pthread_mutex_lock(&lru_locks[id]);
         itemstats[id].direct_reclaims += i;
         pthread_mutex_unlock(&lru_locks[id]);
+#endif
     }
 
     return it;
@@ -292,9 +304,15 @@ item *do_item_alloc(char *key, const size_t nkey, const unsigned int flags,
     }
 
     if (it == NULL) {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&lru_locks[id]);
+        itemstats[id].outofmemory++;
+        sync_lock_release(&lru_locks[id]);
+#else
         pthread_mutex_lock(&lru_locks[id]);
         itemstats[id].outofmemory++;
         pthread_mutex_unlock(&lru_locks[id]);
+#endif
         return NULL;
     }
 
@@ -431,16 +449,29 @@ static void do_item_link_q(item *it) { /* item is the new head */
 }
 
 static void item_link_q(item *it) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&lru_locks[it->slabs_clsid]);
+    do_item_link_q(it);
+    sync_lock_release(&lru_locks[it->slabs_clsid]);
+#else
     pthread_mutex_lock(&lru_locks[it->slabs_clsid]);
     do_item_link_q(it);
     pthread_mutex_unlock(&lru_locks[it->slabs_clsid]);
+#endif
 }
 
 static void item_link_q_warm(item *it) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&lru_locks[it->slabs_clsid]);
+    do_item_link_q(it);
+    itemstats[it->slabs_clsid].moves_to_warm++;
+    sync_lock_release(&lru_locks[it->slabs_clsid]);
+#else
     pthread_mutex_lock(&lru_locks[it->slabs_clsid]);
     do_item_link_q(it);
     itemstats[it->slabs_clsid].moves_to_warm++;
     pthread_mutex_unlock(&lru_locks[it->slabs_clsid]);
+#endif
 }
 
 static void do_item_unlink_q(item *it) {
@@ -476,9 +507,15 @@ static void do_item_unlink_q(item *it) {
 }
 
 static void item_unlink_q(item *it) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&lru_locks[it->slabs_clsid]);
+    do_item_unlink_q(it);
+    sync_lock_release(&lru_locks[it->slabs_clsid]);
+#else
     pthread_mutex_lock(&lru_locks[it->slabs_clsid]);
     do_item_unlink_q(it);
     pthread_mutex_unlock(&lru_locks[it->slabs_clsid]);
+#endif
 }
 
 int do_item_link(item *it, const uint32_t hv) {
@@ -602,12 +639,20 @@ char *item_cachedump(const unsigned int slabs_clsid, const unsigned int limit, u
     unsigned int id = slabs_clsid;
     id |= COLD_LRU;
 
+#ifdef COS_MEMCACHED
+    sync_lock_take(&lru_locks[id]);
+#else
     pthread_mutex_lock(&lru_locks[id]);
+#endif
     it = heads[id];
 
     buffer = malloc((size_t)memlimit);
     if (buffer == 0) {
+#ifdef COS_MEMCACHED
+        sync_lock_release(&lru_locks[id]);
+#else
         pthread_mutex_unlock(&lru_locks[id]);
+#endif
         return NULL;
     }
     bufcurr = 0;
@@ -638,7 +683,11 @@ char *item_cachedump(const unsigned int slabs_clsid, const unsigned int limit, u
     bufcurr += 5;
 
     *bytes = bufcurr;
+#ifdef COS_MEMCACHED
+    sync_lock_release(&lru_locks[id]);
+#else
     pthread_mutex_unlock(&lru_locks[id]);
+#endif
     return buffer;
 }
 
@@ -652,20 +701,34 @@ void fill_item_stats_automove(item_stats_automove *am) {
 
         // outofmemory records into HOT
         int i = n | HOT_LRU;
+#ifdef COS_MEMCACHED
+        sync_lock_take(&lru_locks[i]);
+        cur->outofmemory = itemstats[i].outofmemory;
+        sync_lock_release(&lru_locks[i]);
+#else
         pthread_mutex_lock(&lru_locks[i]);
         cur->outofmemory = itemstats[i].outofmemory;
         pthread_mutex_unlock(&lru_locks[i]);
+#endif
 
         // evictions and tail age are from COLD
         i = n | COLD_LRU;
+#ifdef COS_MEMCACHED
+        sync_lock_take(&lru_locks[i]);
+#else
         pthread_mutex_lock(&lru_locks[i]);
+#endif
         cur->evicted = itemstats[i].evicted;
         if (tails[i]) {
             cur->age = current_time - tails[i]->time;
         } else {
             cur->age = 0;
         }
+#ifdef COS_MEMCACHED
+        sync_lock_release(&lru_locks[i]);
+#else
         pthread_mutex_unlock(&lru_locks[i]);
+#endif
      }
 }
 
@@ -678,7 +741,11 @@ void item_stats_totals(ADD_STAT add_stats, void *c) {
         int i;
         for (x = 0; x < 4; x++) {
             i = n | lru_type_map[x];
+#ifdef COS_MEMCACHED
+            sync_lock_take(&lru_locks[i]);
+#else
             pthread_mutex_lock(&lru_locks[i]);
+#endif
             totals.expired_unfetched += itemstats[i].expired_unfetched;
             totals.evicted_unfetched += itemstats[i].evicted_unfetched;
             totals.evicted_active += itemstats[i].evicted_active;
@@ -691,7 +758,11 @@ void item_stats_totals(ADD_STAT add_stats, void *c) {
             totals.moves_to_warm += itemstats[i].moves_to_warm;
             totals.moves_within_lru += itemstats[i].moves_within_lru;
             totals.direct_reclaims += itemstats[i].direct_reclaims;
+#ifdef COS_MEMCACHED
+            sync_lock_release(&lru_locks[i]);
+#else
             pthread_mutex_unlock(&lru_locks[i]);
+#endif
         }
     }
     APPEND_STAT("expired_unfetched", "%llu",
@@ -746,7 +817,11 @@ void item_stats(ADD_STAT add_stats, void *c) {
         int klen = 0, vlen = 0;
         for (x = 0; x < 4; x++) {
             i = n | lru_type_map[x];
-            pthread_mutex_lock(&lru_locks[i]);
+#ifdef COS_MEMCACHED
+        sync_lock_take(&lru_locks[i]);
+#else
+        pthread_mutex_lock(&lru_locks[i]);
+#endif
             totals.evicted += itemstats[i].evicted;
             totals.evicted_nonzero += itemstats[i].evicted_nonzero;
             totals.outofmemory += itemstats[i].outofmemory;
@@ -788,7 +863,11 @@ void item_stats(ADD_STAT add_stats, void *c) {
                     totals.hits_to_temp = thread_stats.lru_hits[i];
                     break;
             }
-            pthread_mutex_unlock(&lru_locks[i]);
+#ifdef COS_MEMCACHED
+        sync_lock_release(&lru_locks[i]);
+#else
+        pthread_mutex_unlock(&lru_locks[i]);
+#endif
         }
         if (size == 0)
             continue;
@@ -999,9 +1078,15 @@ item *do_item_get(const char *key, const size_t nkey, const uint32_t hv, conn *c
             STORAGE_delete(c->thread->storage, it);
             do_item_remove(it);
             it = NULL;
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+            c->thread->stats.get_flushed++;
+            sync_lock_release(&c->thread->stats.mutex);
+#else
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.get_flushed++;
             pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
             if (settings.verbose > 2) {
                 fprintf(stderr, " -nuked by flush");
             }
@@ -1011,9 +1096,15 @@ item *do_item_get(const char *key, const size_t nkey, const uint32_t hv, conn *c
             STORAGE_delete(c->thread->storage, it);
             do_item_remove(it);
             it = NULL;
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+            c->thread->stats.get_expired++;
+            sync_lock_release(&c->thread->stats.mutex);
+#else
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.get_expired++;
             pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
             if (settings.verbose > 2) {
                 fprintf(stderr, " -nuked by expire");
             }
@@ -1095,7 +1186,11 @@ int lru_pull_tail(const int orig_id, const int cur_lru,
     uint64_t limit = 0;
 
     id |= cur_lru;
+#ifdef COS_MEMCACHED
+    sync_lock_take(&lru_locks[id]);
+#else
     pthread_mutex_lock(&lru_locks[id]);
+#endif
     search = tails[id];
     /* We walk up *only* for locked items, and if bottom is expired. */
     for (; tries > 0 && search != NULL; tries--, search=next_it) {
@@ -1104,7 +1199,11 @@ int lru_pull_tail(const int orig_id, const int cur_lru,
         if (search->nbytes == 0 && search->nkey == 0 && search->it_flags == 1) {
             /* We are a crawler, ignore it. */
             if (flags & LRU_PULL_CRAWL_BLOCKS) {
+#ifdef COS_MEMCACHED
+                sync_lock_release(&lru_locks[id]);
+#else
                 pthread_mutex_unlock(&lru_locks[id]);
+#endif
                 return 0;
             }
             tries++;
@@ -1236,9 +1335,11 @@ int lru_pull_tail(const int orig_id, const int cur_lru,
         if (it != NULL)
             break;
     }
-
+#ifdef COS_MEMCACHED
+    sync_lock_release(&lru_locks[id]);
+#else
     pthread_mutex_unlock(&lru_locks[id]);
-
+#endif
     if (it != NULL) {
         if (move_to_lru) {
             it->slabs_clsid = ITEM_clsid(it);
@@ -1397,18 +1498,35 @@ static int lru_maintainer_juggle(const int slabs_clsid) {
     rel_time_t warm_age = 0;
     /* If LRU is in flat mode, force items to drain into COLD via max age of 0 */
     if (settings.lru_segmented) {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&lru_locks[slabs_clsid|COLD_LRU]);
+#else
         pthread_mutex_lock(&lru_locks[slabs_clsid|COLD_LRU]);
+#endif
         if (tails[slabs_clsid|COLD_LRU]) {
             cold_age = current_time - tails[slabs_clsid|COLD_LRU]->time;
         }
         // Also build up total_bytes for the classes.
         total_bytes += sizes_bytes[slabs_clsid|COLD_LRU];
+#ifdef COS_MEMCACHED
+        sync_lock_release(&lru_locks[slabs_clsid|COLD_LRU]);
+#else
         pthread_mutex_unlock(&lru_locks[slabs_clsid|COLD_LRU]);
+#endif
 
         hot_age = cold_age * settings.hot_max_factor;
         warm_age = cold_age * settings.warm_max_factor;
 
         // total_bytes doesn't have to be exact. cache it for the juggles.
+#ifdef COS_MEMCACHED
+        sync_lock_take(&lru_locks[slabs_clsid|HOT_LRU]);
+        total_bytes += sizes_bytes[slabs_clsid|HOT_LRU];
+        sync_lock_release(&lru_locks[slabs_clsid|HOT_LRU]);
+
+        sync_lock_take(&lru_locks[slabs_clsid|WARM_LRU]);
+        total_bytes += sizes_bytes[slabs_clsid|WARM_LRU];
+        sync_lock_release(&lru_locks[slabs_clsid|WARM_LRU]);
+#else
         pthread_mutex_lock(&lru_locks[slabs_clsid|HOT_LRU]);
         total_bytes += sizes_bytes[slabs_clsid|HOT_LRU];
         pthread_mutex_unlock(&lru_locks[slabs_clsid|HOT_LRU]);
@@ -1416,6 +1534,7 @@ static int lru_maintainer_juggle(const int slabs_clsid) {
         pthread_mutex_lock(&lru_locks[slabs_clsid|WARM_LRU]);
         total_bytes += sizes_bytes[slabs_clsid|WARM_LRU];
         pthread_mutex_unlock(&lru_locks[slabs_clsid|WARM_LRU]);
+#endif
     }
 
     /* Juggle HOT/WARM up to N times */
@@ -1525,11 +1644,20 @@ static void lru_maintainer_crawler_check(struct crawler_expired_data *cdata, log
             pthread_mutex_unlock(&cdata->lock);
         }
         if (current_time > next_crawls[i]) {
+#ifdef COS_MEMCACHED
+            sync_lock_take(&lru_locks[i]);
+            if (sizes[i] > tocrawl_limit) {
+                tocrawl_limit = sizes[i];
+            }
+            sync_lock_release(&lru_locks[i]);
+#else
             pthread_mutex_lock(&lru_locks[i]);
             if (sizes[i] > tocrawl_limit) {
                 tocrawl_limit = sizes[i];
             }
             pthread_mutex_unlock(&lru_locks[i]);
+#endif
+
             todo[i] = 1;
             do_run = true;
             next_crawls[i] = current_time + 5; // minimum retry wait.

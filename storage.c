@@ -361,9 +361,15 @@ int storage_get_item(conn *c, item *it, mc_resp *resp) {
     // FIXME: This stat needs to move to reflect # of flash hits vs misses
     // for now it's a good gauge on how often we request out to flash at
     // least.
+#ifdef COS_MEMCACHED
+    sync_lock_take(&c->thread->stats.mutex);
+    c->thread->stats.get_extstore++;
+    sync_lock_release(&c->thread->stats.mutex);
+#else
     pthread_mutex_lock(&c->thread->stats.mutex);
     c->thread->stats.get_extstore++;
     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
     return 0;
 }
@@ -393,20 +399,34 @@ static void recache_or_free(io_pending_t *pending) {
         io_queue_t *q = conn_io_queue_get(c, p->io_queue_type);
         q->count--;
         assert(q->count >= 0);
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.get_aborted_extstore++;
+            sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.get_aborted_extstore++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
     } else if (p->miss) {
         // If request was ultimately a miss, unlink the header.
         do_free = false;
         size_t ntotal = ITEM_ntotal(p->hdr_it);
         item_unlink(p->hdr_it);
         slabs_free(it, ntotal, slabs_clsid(ntotal));
+#ifdef COS_MEMCACHED
+        jsync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.miss_from_extstore++;
+        if (p->badcrc)
+            c->thread->stats.badcrc_from_extstore++;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.miss_from_extstore++;
         if (p->badcrc)
             c->thread->stats.badcrc_from_extstore++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
     } else if (settings.ext_recache_rate) {
         // hashvalue is cuddled during store
         uint32_t hv = (uint32_t)it->time;
@@ -427,9 +447,15 @@ static void recache_or_free(io_pending_t *pending) {
                 it->h_next = NULL; // might not be necessary.
                 STORAGE_delete(c->thread->storage, h_it);
                 item_replace(h_it, it, hv);
+#ifdef COS_MEMCACHED
+                sync_lock_take(&c->thread->stats.mutex);
+                c->thread->stats.recache_from_extstore++;
+                sync_lock_release(&c->thread->stats.mutex);
+#else
                 pthread_mutex_lock(&c->thread->stats.mutex);
                 c->thread->stats.recache_from_extstore++;
                 pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
             }
         }
         if (hold_lock)

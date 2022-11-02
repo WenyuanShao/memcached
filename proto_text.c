@@ -137,9 +137,15 @@ void complete_nread_ascii(conn *c) {
     enum store_item_type ret;
     bool is_valid = false;
 
+#ifdef COS_MEMCACHED
+    sync_lock_take(&c->thread->stats.mutex);
+    c->thread->stats.slab_stats[ITEM_clsid(it)].set_cmds++;
+    sync_lock_release(&c->thread->stats.mutex);
+#else
     pthread_mutex_lock(&c->thread->stats.mutex);
     c->thread->stats.slab_stats[ITEM_clsid(it)].set_cmds++;
     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
     if ((it->it_flags & ITEM_CHUNKED) == 0) {
         if (strncmp(ITEM_data(it) + it->nbytes - 2, "\r\n", 2) == 0) {
@@ -425,15 +431,29 @@ int try_read_command_asciiauth(conn *c) {
         out_string(c, "STORED");
         c->authenticated = true;
         c->try_read_command = try_read_command_ascii;
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.auth_cmds++;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.auth_cmds++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
     } else {
         out_string(c, "CLIENT_ERROR authentication failure");
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.auth_cmds++;
+        c->thread->stats.auth_errors++;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.auth_cmds++;
         c->thread->stats.auth_errors++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
+
     }
 
     return 1;
@@ -602,9 +622,15 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
 #ifdef EXTSTORE
                   if (it->it_flags & ITEM_HDR) {
                       if (storage_get_item(c, it, resp) != 0) {
+#ifdef COS_MEMCACHED
+                          sync_lock_take(&c->thread->stats.mutex);
+                          c->thread->stats.get_oom_extstore++;
+                          sync_lock_release(&c->thread->stats.mutex);
+#else
                           pthread_mutex_lock(&c->thread->stats.mutex);
                           c->thread->stats.get_oom_extstore++;
                           pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
                           item_remove(it);
                           goto stop;
@@ -633,6 +659,17 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                 }
 
                 /* item_get() has incremented it->refcount for us */
+#ifdef COS_MEMCACHED
+                sync_lock_take(&c->thread->stats.mutex);
+                if (should_touch) {
+                    c->thread->stats.touch_cmds++;
+                    c->thread->stats.slab_stats[ITEM_clsid(it)].touch_hits++;
+                } else {
+                    c->thread->stats.lru_hits[it->slabs_clsid]++;
+                    c->thread->stats.get_cmds++;
+                }
+                sync_lock_release(&c->thread->stats.mutex);
+#else
                 pthread_mutex_lock(&c->thread->stats.mutex);
                 if (should_touch) {
                     c->thread->stats.touch_cmds++;
@@ -642,6 +679,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                     c->thread->stats.get_cmds++;
                 }
                 pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 #ifdef EXTSTORE
                 /* If ITEM_HDR, an io_wrap owns the reference. */
                 if ((it->it_flags & ITEM_HDR) == 0) {
@@ -651,6 +689,18 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                 resp->item = it;
 #endif
             } else {
+#ifdef COS_MEMCACHED
+                sync_lock_take(&c->thread->stats.mutex);
+                if (should_touch) {
+                    c->thread->stats.touch_cmds++;
+                    c->thread->stats.touch_misses++;
+                } else {
+                    c->thread->stats.get_misses++;
+                    c->thread->stats.get_cmds++;
+                }
+                MEMCACHED_COMMAND_GET(c->sfd, key, nkey, -1, 0);
+                sync_lock_release(&c->thread->stats.mutex);
+#else
                 pthread_mutex_lock(&c->thread->stats.mutex);
                 if (should_touch) {
                     c->thread->stats.touch_cmds++;
@@ -661,6 +711,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                 }
                 MEMCACHED_COMMAND_GET(c->sfd, key, nkey, -1, 0);
                 pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
             }
 
             key_token++;
@@ -888,9 +939,15 @@ static void process_meta_command(conn *c, token_t *tokens, const size_t ntokens)
     } else {
         out_string(c, "EN");
     }
+#ifdef COS_MEMCACHED
+    sync_lock_take(&c->thread->stats.mutex);
+    c->thread->stats.meta_cmds++;
+    sync_lock_release(&c->thread->stats.mutex);
+#else
     pthread_mutex_lock(&c->thread->stats.mutex);
     c->thread->stats.meta_cmds++;
     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 }
 
 #define MFLAG_MAX_OPT_LENGTH 20
@@ -1263,9 +1320,15 @@ static void process_mget_command(conn *c, token_t *tokens, const size_t ntokens)
 #ifdef EXTSTORE
             if (it->it_flags & ITEM_HDR) {
                 if (storage_get_item(c, it, resp) != 0) {
+#ifdef COS_MEMCACHED
+                    sync_lock_take(&c->thread->stats.mutex);
+                    c->thread->stats.get_oom_extstore++;
+                    sync_lock_release(&c->thread->stats.mutex);
+#else
                     pthread_mutex_lock(&c->thread->stats.mutex);
                     c->thread->stats.get_oom_extstore++;
                     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
                     failed = true;
                 }
@@ -1318,6 +1381,17 @@ static void process_mget_command(conn *c, token_t *tokens, const size_t ntokens)
     // we count this command as a normal one if we've gotten this far.
     // TODO: for autovivify case, miss never happens. Is this okay?
     if (!failed) {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        if (ttl_set) {
+            c->thread->stats.touch_cmds++;
+            c->thread->stats.slab_stats[ITEM_clsid(it)].touch_hits++;
+        } else {
+            c->thread->stats.lru_hits[it->slabs_clsid]++;
+            c->thread->stats.get_cmds++;
+        }
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         if (ttl_set) {
             c->thread->stats.touch_cmds++;
@@ -1327,9 +1401,22 @@ static void process_mget_command(conn *c, token_t *tokens, const size_t ntokens)
             c->thread->stats.get_cmds++;
         }
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
         conn_set_state(c, conn_new_cmd);
     } else {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        if (ttl_set) {
+            c->thread->stats.touch_cmds++;
+            c->thread->stats.touch_misses++;
+        } else {
+            c->thread->stats.get_misses++;
+            c->thread->stats.get_cmds++;
+        }
+        MEMCACHED_COMMAND_GET(c->sfd, key, nkey, -1, 0);
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         if (ttl_set) {
             c->thread->stats.touch_cmds++;
@@ -1340,6 +1427,7 @@ static void process_mget_command(conn *c, token_t *tokens, const size_t ntokens)
         }
         MEMCACHED_COMMAND_GET(c->sfd, key, nkey, -1, 0);
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
         // This gets elided in noreply mode.
         out_string(c, "EN");
@@ -1488,15 +1576,28 @@ static void process_mset_command(conn *c, token_t *tokens, const size_t ntokens)
         if (! item_size_ok(nkey, of.client_flags, vlen)) {
             errstr = "SERVER_ERROR object too large for cache";
             status = TOO_LARGE;
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+            c->thread->stats.store_too_large++;
+            sync_lock_release(&c->thread->stats.mutex);
+#else
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.store_too_large++;
             pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
+
         } else {
             errstr = "SERVER_ERROR out of memory storing object";
             status = NO_MEMORY;
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+            c->thread->stats.store_no_memory++;
+            sync_lock_release(&c->thread->stats.mutex);
+#else
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.store_no_memory++;
             pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
         }
         // FIXME: LOGGER_LOG specific to mset, include options.
         LOGGER_LOG(c->thread->l, LOG_MUTATIONS, LOGGER_ITEM_STORE,
@@ -1617,9 +1718,15 @@ static void process_mdelete_command(conn *c, token_t *tokens, const size_t ntoke
 
         // allow only deleting/marking if a CAS value matches.
         if (of.has_cas && ITEM_get_cas(it) != of.req_cas_id) {
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+            c->thread->stats.delete_misses++;
+            sync_lock_release(&c->thread->stats.mutex);
+#else
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.delete_misses++;
             pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
             memcpy(resp->wbuf, "EX ", 3);
             goto cleanup;
@@ -1647,9 +1754,15 @@ static void process_mdelete_command(conn *c, token_t *tokens, const size_t ntoke
                 memcpy(resp->wbuf, "HD ", 3);
             }
         } else {
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+            c->thread->stats.slab_stats[ITEM_clsid(it)].delete_hits++;
+            sync_lock_release(&c->thread->stats.mutex);
+#else
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.slab_stats[ITEM_clsid(it)].delete_hits++;
             pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
             do_item_unlink(it, hv);
             STORAGE_delete(c->thread->storage, it);
@@ -1663,9 +1776,16 @@ static void process_mdelete_command(conn *c, token_t *tokens, const size_t ntoke
         }
         goto cleanup;
     } else {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.delete_misses++;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.delete_misses++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
+
 
         memcpy(resp->wbuf, "NF ", 3);
         goto cleanup;
@@ -1796,6 +1916,15 @@ static void process_marithmetic_command(conn *c, token_t *tokens, const size_t n
                 goto error;
             }
         } else {
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+            if (incr) {
+                c->thread->stats.incr_misses++;
+            } else {
+                c->thread->stats.decr_misses++;
+            }
+            sync_lock_release(&c->thread->stats.mutex);
+#else
             pthread_mutex_lock(&c->thread->stats.mutex);
             if (incr) {
                 c->thread->stats.incr_misses++;
@@ -1803,6 +1932,7 @@ static void process_marithmetic_command(conn *c, token_t *tokens, const size_t n
                 c->thread->stats.decr_misses++;
             }
             pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
             // won't have a valid it here.
             memcpy(p, "NF ", 3);
             p += 3;
@@ -1975,15 +2105,27 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
         if (! item_size_ok(nkey, flags, vlen)) {
             out_string(c, "SERVER_ERROR object too large for cache");
             status = TOO_LARGE;
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+            c->thread->stats.store_too_large++;
+            sync_lock_release(&c->thread->stats.mutex);
+#else
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.store_too_large++;
             pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
         } else {
             out_of_memory(c, "SERVER_ERROR out of memory storing object");
             status = NO_MEMORY;
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+            c->thread->stats.store_no_memory++;
+            sync_lock_release(&c->thread->stats.mutex);
+#else
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.store_no_memory++;
             pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
         }
         LOGGER_LOG(c->thread->l, LOG_MUTATIONS, LOGGER_ITEM_STORE,
                 NULL, status, comm, key, nkey, 0, 0, c->sfd);
@@ -2048,18 +2190,33 @@ static void process_touch_command(conn *c, token_t *tokens, const size_t ntokens
     exptime = realtime(EXPTIME_TO_POSITIVE_TIME(exptime_int));
     it = item_touch(key, nkey, exptime, c);
     if (it) {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.touch_cmds++;
+        c->thread->stats.slab_stats[ITEM_clsid(it)].touch_hits++;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.touch_cmds++;
         c->thread->stats.slab_stats[ITEM_clsid(it)].touch_hits++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
+
 
         out_string(c, "TOUCHED");
         item_remove(it);
     } else {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.touch_cmds++;
+        c->thread->stats.touch_misses++;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.touch_cmds++;
         c->thread->stats.touch_misses++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
         out_string(c, "NOT_FOUND");
     }
@@ -2099,6 +2256,15 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
         out_of_memory(c, "SERVER_ERROR out of memory");
         break;
     case DELTA_ITEM_NOT_FOUND:
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        if (incr) {
+            c->thread->stats.incr_misses++;
+        } else {
+            c->thread->stats.decr_misses++;
+        }
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         if (incr) {
             c->thread->stats.incr_misses++;
@@ -2106,6 +2272,7 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
             c->thread->stats.decr_misses++;
         }
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
         out_string(c, "NOT_FOUND");
         break;
@@ -2152,18 +2319,30 @@ static void process_delete_command(conn *c, token_t *tokens, const size_t ntoken
     if (it) {
         MEMCACHED_COMMAND_DELETE(c->sfd, ITEM_key(it), it->nkey);
 
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.slab_stats[ITEM_clsid(it)].delete_hits++;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.slab_stats[ITEM_clsid(it)].delete_hits++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
         do_item_unlink(it, hv);
         STORAGE_delete(c->thread->storage, it);
         do_item_remove(it);      /* release our reference */
         out_string(c, "DELETED");
     } else {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.delete_misses++;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.delete_misses++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
         out_string(c, "NOT_FOUND");
     }
@@ -2476,9 +2655,15 @@ static void process_flush_all_command(conn *c, token_t *tokens, const size_t nto
 
     set_noreply_maybe(c, tokens, ntokens);
 
+#ifdef COS_MEMCACHED
+    sync_lock_take(&c->thread->stats.mutex);
+    c->thread->stats.flush_cmds++;
+    sync_lock_release(&c->thread->stats.mutex);
+#else
     pthread_mutex_lock(&c->thread->stats.mutex);
     c->thread->stats.flush_cmds++;
     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
     if (!settings.flush_enabled) {
         // flush_all is not allowed but we log it on stats

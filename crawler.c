@@ -95,7 +95,11 @@ static crawler crawlers[LARGEST_ID];
 static int crawler_count = 0;
 static volatile int do_run_lru_crawler_thread = 0;
 static int lru_crawler_initialized = 0;
+#ifdef COS_MEMCACHED
+static struct sync_lock lru_crawler_lock;
+#else
 static pthread_mutex_t lru_crawler_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
 static pthread_cond_t  lru_crawler_cond = PTHREAD_COND_INITIALIZER;
 #ifdef EXTSTORE
 /* TODO: pass this around */
@@ -344,7 +348,11 @@ static void lru_crawler_class_done(int i) {
     do_item_unlinktail_q((item *)&crawlers[i]);
     do_item_stats_add_crawl(i, crawlers[i].reclaimed,
             crawlers[i].unfetched, crawlers[i].checked);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&lru_locks[i]);
+#else
     pthread_mutex_unlock(&lru_locks[i]);
+#endif
     if (active_crawler_mod.mod->doneclass != NULL)
         active_crawler_mod.mod->doneclass(&active_crawler_mod, i);
 }
@@ -365,14 +373,25 @@ static void item_crawl_hash(void) {
         if (it == NULL) {
             // - sleep bits from orig loop
             if (crawls_persleep-- <= 0 && settings.lru_crawler_sleep) {
+#ifdef COS_MEMCACHED
+                sync_lock_take(&lru_crawler_lock);
+                usleep(settings.lru_crawler_sleep);
+                sync_lock_release(&lru_crawler_lock);
+#else
                 pthread_mutex_unlock(&lru_crawler_lock);
                 usleep(settings.lru_crawler_sleep);
                 pthread_mutex_lock(&lru_crawler_lock);
+#endif
                 crawls_persleep = settings.crawls_persleep;
             } else if (!settings.lru_crawler_sleep) {
                 // TODO: only cycle lock every N?
+#ifdef COS_MEMCACHED
+                sync_lock_take(&lru_crawler_lock);
+                sync_lock_release(&lru_crawler_lock);
+#else
                 pthread_mutex_unlock(&lru_crawler_lock);
                 pthread_mutex_lock(&lru_crawler_lock);
+#endif
             }
             continue;
         }
@@ -409,13 +428,26 @@ static void *item_crawler_thread(void *arg) {
     int i;
     int crawls_persleep = settings.crawls_persleep;
 
+#ifdef COS_MEMCACHED
+    sync_lock_take(&lru_crawler_lock);
+#else
     pthread_mutex_lock(&lru_crawler_lock);
+#endif
+
+#ifdef COS_MEMCACHED
+    assert(0);
+#else
     pthread_cond_signal(&lru_crawler_cond);
+#endif
     settings.lru_crawler = true;
     if (settings.verbose > 2)
         fprintf(stderr, "Starting LRU crawler background thread\n");
     while (do_run_lru_crawler_thread) {
+#ifdef COS_MEMCACHED
+    assert(0);
+#else
     pthread_cond_wait(&lru_crawler_cond, &lru_crawler_lock);
+#endif
 
     if (crawler_count == -1) {
         item_crawl_hash();
@@ -441,7 +473,11 @@ static void *item_crawler_thread(void *arg) {
                 lru_crawler_class_done(i);
                 continue;
             }
+#ifdef COS_MEMCACHED
+            sync_lock_take(&lru_locks[i]);
+#else
             pthread_mutex_lock(&lru_locks[i]);
+#endif
             search = do_item_crawl_q((item *)&crawlers[i]);
             if (search == NULL ||
                 (crawlers[i].remaining && --crawlers[i].remaining < 1)) {
@@ -455,7 +491,11 @@ static void *item_crawler_thread(void *arg) {
              * other callers can incr the refcount
              */
             if ((hold_lock = item_trylock(hv)) == NULL) {
-                pthread_mutex_unlock(&lru_locks[i]);
+#ifdef COS_MEMCACHED
+        sync_lock_release(&lru_locks[i]);
+#else
+        pthread_mutex_unlock(&lru_locks[i]);
+#endif
                 continue;
             }
             /* Now see if the item is refcount locked */
@@ -463,7 +503,11 @@ static void *item_crawler_thread(void *arg) {
                 refcount_decr(search);
                 if (hold_lock)
                     item_trylock_unlock(hold_lock);
-                pthread_mutex_unlock(&lru_locks[i]);
+#ifdef COS_MEMCACHED
+        sync_lock_release(&lru_locks[i]);
+#else
+        pthread_mutex_unlock(&lru_locks[i]);
+#endif
                 continue;
             }
 
@@ -472,26 +516,49 @@ static void *item_crawler_thread(void *arg) {
             /* Interface for this could improve: do the free/decr here
              * instead? */
             if (!active_crawler_mod.mod->needs_lock) {
+#ifdef COS_MEMCACHED
+                sync_lock_release(&lru_locks[i]);
+#else
                 pthread_mutex_unlock(&lru_locks[i]);
+#endif
             }
 
             active_crawler_mod.mod->eval(&active_crawler_mod, search, hv, i);
 
             if (hold_lock)
+#ifdef COS_MEMCACHED
+                sync_lock_release(hold_lock);
+#else
                 item_trylock_unlock(hold_lock);
+#endif
             if (active_crawler_mod.mod->needs_lock) {
+#ifdef COS_MEMCACHED
+                sync_lock_release(&lru_locks[i]);
+#else
                 pthread_mutex_unlock(&lru_locks[i]);
+#endif
             }
 
             if (crawls_persleep-- <= 0 && settings.lru_crawler_sleep) {
+#ifdef COS_MEMCACHED
+                sync_lock_take(&lru_crawler_lock);
+                usleep(settings.lru_crawler_sleep);
+                sync_lock_release(&lru_crawler_lock);
+#else
                 pthread_mutex_unlock(&lru_crawler_lock);
                 usleep(settings.lru_crawler_sleep);
                 pthread_mutex_lock(&lru_crawler_lock);
+#endif
                 crawls_persleep = settings.crawls_persleep;
             } else if (!settings.lru_crawler_sleep) {
                 // TODO: only cycle lock every N?
+#ifdef COS_MEMCACHED
+                sync_lock_release(&lru_crawler_lock);
+                sync_lock_take(&lru_crawler_lock);
+#else
                 pthread_mutex_unlock(&lru_crawler_lock);
                 pthread_mutex_lock(&lru_crawler_lock);
+#endif
             }
         }
     } // while
@@ -517,7 +584,11 @@ static void *item_crawler_thread(void *arg) {
     stats_state.lru_crawler_running = false;
     STATS_UNLOCK();
     }
+#ifdef COS_MEMCACHED
+    sync_lock_release(&lru_crawler_lock);
+#else
     pthread_mutex_unlock(&lru_crawler_lock);
+#endif
     if (settings.verbose > 2)
         fprintf(stderr, "LRU crawler thread stopping\n");
     settings.lru_crawler = false;
@@ -529,14 +600,27 @@ static pthread_t item_crawler_tid;
 
 int stop_item_crawler_thread(bool wait) {
     int ret;
+#ifdef COS_MEMCACHED
+    sync_lock_take(&lru_crawler_lock);
+#else
     pthread_mutex_lock(&lru_crawler_lock);
+#endif
     if (do_run_lru_crawler_thread == 0) {
+#ifdef COS_MEMCACHED
+        sync_lock_release(&lru_crawler_lock);
+#else
         pthread_mutex_unlock(&lru_crawler_lock);
+#endif
         return 0;
     }
     do_run_lru_crawler_thread = 0;
+#ifdef COS_MEMCACHED
+    assert(0);
+#else
     pthread_cond_signal(&lru_crawler_cond);
     pthread_mutex_unlock(&lru_crawler_lock);
+#endif
+
     if (wait && (ret = pthread_join(item_crawler_tid, NULL)) != 0) {
         fprintf(stderr, "Failed to stop LRU crawler thread: %s\n", strerror(ret));
         return -1;
@@ -560,19 +644,30 @@ int start_item_crawler_thread(void) {
 
     if (settings.lru_crawler)
         return -1;
+#ifdef COS_MEMCACHED
+    sync_lock_take(&lru_crawler_lock);
+#else
     pthread_mutex_lock(&lru_crawler_lock);
+#endif
     do_run_lru_crawler_thread = 1;
     if ((ret = pthread_create(&item_crawler_tid, NULL,
         item_crawler_thread, NULL)) != 0) {
         fprintf(stderr, "Can't create LRU crawler thread: %s\n",
             strerror(ret));
+#ifdef COS_MEMCACHED
+        sync_lock_release(&lru_crawler_lock);
+#else
         pthread_mutex_unlock(&lru_crawler_lock);
+#endif
         return -1;
     }
     /* Avoid returning until the crawler has actually started */
+#ifdef COS_MEMCACHED
+    assert(0);
+#else
     pthread_cond_wait(&lru_crawler_cond, &lru_crawler_lock);
     pthread_mutex_unlock(&lru_crawler_lock);
-
+#endif
     return 0;
 }
 
@@ -583,7 +678,11 @@ static int do_lru_crawler_start(uint32_t id, uint32_t remaining) {
     uint32_t sid = id;
     int starts = 0;
 
+#ifdef COS_MEMCACHED
+    sync_lock_take(&lru_locks[sid]);
+#else
     pthread_mutex_lock(&lru_locks[sid]);
+#endif
     if (crawlers[sid].it_flags == 0) {
         if (settings.verbose > 2)
             fprintf(stderr, "Kicking LRU crawler off for LRU %u\n", sid);
@@ -613,7 +712,11 @@ static int do_lru_crawler_start(uint32_t id, uint32_t remaining) {
         crawler_count++;
         starts++;
     }
+#ifdef COS_MEMCACHED
+    sync_lock_release(&lru_locks[sid]);
+#else
     pthread_mutex_unlock(&lru_locks[sid]);
+#endif
     return starts;
 }
 
@@ -638,30 +741,50 @@ int lru_crawler_start(uint8_t *ids, uint32_t remaining,
     int starts = 0;
     bool is_running;
     static rel_time_t block_ae_until = 0;
+#ifdef COS_MEMCACHED
+    sync_lock_take(&lru_crawler_lock);
+#else
     pthread_mutex_lock(&lru_crawler_lock);
+#endif
     STATS_LOCK();
     is_running = stats_state.lru_crawler_running;
     STATS_UNLOCK();
     if (do_run_lru_crawler_thread == 0) {
+#ifdef COS_MEMCACHED
+        sync_lock_release(&lru_crawler_lock);
+#else
         pthread_mutex_unlock(&lru_crawler_lock);
+#endif
         return -2;
     }
 
     if (is_running &&
             !(type == CRAWLER_AUTOEXPIRE && active_crawler_type == CRAWLER_AUTOEXPIRE)) {
+#ifdef COS_MEMCACHED
+        sync_lock_release(&lru_crawler_lock);
+#else
         pthread_mutex_unlock(&lru_crawler_lock);
+#endif
         block_ae_until = current_time + 60;
         return -1;
     }
 
     if (type == CRAWLER_AUTOEXPIRE && block_ae_until > current_time) {
+#ifdef COS_MEMCACHED
+        sync_lock_release(&lru_crawler_lock);
+#else
         pthread_mutex_unlock(&lru_crawler_lock);
+#endif
         return -1;
     }
 
     /* hash table walk only supported with metadump for now. */
     if (type != CRAWLER_METADUMP && ids == NULL) {
+#ifdef COS_MEMCACHED
+        sync_lock_release(&lru_crawler_lock);
+#else
         pthread_mutex_unlock(&lru_crawler_lock);
+#endif
         return -2;
     }
 
@@ -675,11 +798,19 @@ int lru_crawler_start(uint8_t *ids, uint32_t remaining,
         }
         if (active_crawler_mod.mod->needs_client) {
             if (c == NULL || sfd == 0) {
+#ifdef COS_MEMCACHED
+                sync_lock_release(&lru_crawler_lock);
+#else
                 pthread_mutex_unlock(&lru_crawler_lock);
+#endif
                 return -2;
             }
             if (lru_crawler_set_client(&active_crawler_mod, c, sfd) != 0) {
+#ifdef COS_MEMCACHED
+                sync_lock_release(&lru_crawler_lock);
+#else
                 pthread_mutex_unlock(&lru_crawler_lock);
+#endif
                 return -2;
             }
         }
@@ -706,7 +837,11 @@ int lru_crawler_start(uint8_t *ids, uint32_t remaining,
         STATS_UNLOCK();
         pthread_cond_signal(&lru_crawler_cond);
     }
+#ifdef COS_MEMCACHED
+    sync_lock_release(&lru_crawler_lock);
+#else
     pthread_mutex_unlock(&lru_crawler_lock);
+#endif
     return starts;
 }
 
@@ -759,14 +894,25 @@ enum crawler_result_type lru_crawler_crawl(char *slabs, const enum crawler_run_t
 
 /* If we hold this lock, crawler can't wake up or move */
 void lru_crawler_pause(void) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&lru_crawler_lock);
+#else
     pthread_mutex_lock(&lru_crawler_lock);
+#endif
 }
 
 void lru_crawler_resume(void) {
+#ifdef COS_MEMCACHED
+    sync_lock_release(&lru_crawler_lock);
+#else
     pthread_mutex_unlock(&lru_crawler_lock);
+#endif
 }
 
 int init_lru_crawler(void *arg) {
+#ifdef COS_MEMCACHED
+    sync_lock_init(&lru_crawler_lock);
+#endif
     if (lru_crawler_initialized == 0) {
 #ifdef EXTSTORE
         storage = arg;

@@ -62,6 +62,11 @@
 #include <sys/sysctl.h>
 #endif
 
+#ifdef COS_MEMCACHED
+/* default IOV_MAX is too large that will crash stack in Composite */
+#undef IOV_MAX
+#define IOV_MAX 8
+#endif
 /*
  * forward declarations
  */
@@ -539,9 +544,15 @@ void conn_close_idle(conn *c) {
         if (settings.verbose > 1)
             fprintf(stderr, "Closing idle fd %d\n", c->sfd);
 
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.idle_kicks++;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.idle_kicks++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
         c->close_reason = IDLE_TIMEOUT_CLOSE;
 
@@ -1624,9 +1635,15 @@ enum store_item_type do_store_item(item *it, int comm, conn *c, const uint32_t h
                     // cas validates
                     // it and old_it may belong to different classes.
                     // I'm updating the stats for the one that's getting pushed out
+#ifdef COS_MEMCACHED
+                    sync_lock_take(&c->thread->stats.mutex);
+                    c->thread->stats.slab_stats[ITEM_clsid(old_it)].cas_hits++;
+                    sync_lock_release(&c->thread->stats.mutex);
+#else
                     pthread_mutex_lock(&c->thread->stats.mutex);
                     c->thread->stats.slab_stats[ITEM_clsid(old_it)].cas_hits++;
                     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
                     do_store = true;
                 } else if (cas_res == CAS_STALE) {
                     // if we're allowed to set a stale value, CAS must be lower than
@@ -1638,16 +1655,27 @@ enum store_item_type do_store_item(item *it, int comm, conn *c, const uint32_t h
                     if (old_it->it_flags & ITEM_TOKEN_SENT) {
                         it->it_flags |= ITEM_TOKEN_SENT;
                     }
-
+#ifdef COS_MEMCACHED
+                    sync_lock_take(&c->thread->stats.mutex);
+                    c->thread->stats.slab_stats[ITEM_clsid(old_it)].cas_hits++;
+                    sync_lock_release(&c->thread->stats.mutex);
+#else
                     pthread_mutex_lock(&c->thread->stats.mutex);
                     c->thread->stats.slab_stats[ITEM_clsid(old_it)].cas_hits++;
                     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
                     do_store = true;
                 } else {
                     // NONE or BADVAL are the same for CAS cmd
+#ifdef COS_MEMCACHED
+                    sync_lock_take(&c->thread->stats.mutex);
+                    c->thread->stats.slab_stats[ITEM_clsid(old_it)].cas_badval++;
+                    sync_lock_release(&c->thread->stats.mutex);
+#else
                     pthread_mutex_lock(&c->thread->stats.mutex);
                     c->thread->stats.slab_stats[ITEM_clsid(old_it)].cas_badval++;
                     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
                     if (settings.verbose > 1) {
                         fprintf(stderr, "CAS:  failure: expected %llu, got %llu\n",
@@ -1720,9 +1748,15 @@ enum store_item_type do_store_item(item *it, int comm, conn *c, const uint32_t h
             case NREAD_CAS:
                 // LRU expired
                 stored = NOT_FOUND;
+#ifdef COS_MEMCACHED
+                sync_lock_take(&c->thread->stats.mutex);
+                c->thread->stats.cas_misses++;
+                sync_lock_release(&c->thread->stats.mutex);
+#else
                 pthread_mutex_lock(&c->thread->stats.mutex);
                 c->thread->stats.cas_misses++;
                 pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
                 break;
             case NREAD_REPLACE:
             case NREAD_APPEND:
@@ -2303,7 +2337,15 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
         }
         MEMCACHED_COMMAND_DECR(c->sfd, ITEM_key(it), it->nkey, value);
     }
-
+#ifdef COS_MEMCACHED
+    sync_lock_take(&c->thread->stats.mutex);
+    if (incr) {
+        c->thread->stats.slab_stats[ITEM_clsid(it)].incr_hits++;
+    } else {
+        c->thread->stats.slab_stats[ITEM_clsid(it)].decr_hits++;
+    }
+    sync_lock_release(&c->thread->stats.mutex);
+#else
     pthread_mutex_lock(&c->thread->stats.mutex);
     if (incr) {
         c->thread->stats.slab_stats[ITEM_clsid(it)].incr_hits++;
@@ -2311,6 +2353,8 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
         c->thread->stats.slab_stats[ITEM_clsid(it)].decr_hits++;
     }
     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
+
 
     itoa_u64(value, buf);
     res = strlen(buf);
@@ -2422,9 +2466,15 @@ static enum try_read_result try_read_udp(conn *c) {
 #endif
     if (res > 8) {
         unsigned char *buf = (unsigned char *)c->rbuf;
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.bytes_read += res;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.bytes_read += res;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
         /* Beginning of UDP packet is the request ID; save it. */
         c->request_id = buf[0] * 256 + buf[1];
@@ -2496,9 +2546,15 @@ static enum try_read_result try_read_network(conn *c) {
         int avail = c->rsize - c->rbytes;
         res = c->read(c, c->rbuf + c->rbytes, avail);
         if (res > 0) {
+#ifdef COS_MEMCACHED
+            sync_lock_take(&c->thread->stats.mutex);
+            c->thread->stats.bytes_read += res;
+            sync_lock_release(&c->thread->stats.mutex);
+#else
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.bytes_read += res;
             pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
             gotdata = READ_DATA_RECEIVED;
             c->rbytes += res;
             if (res == avail && c->rbuf_malloced) {
@@ -2738,9 +2794,15 @@ static enum transmit_result transmit(conn *c) {
     msg.msg_iovlen = iovused;
     res = c->sendmsg(c, &msg, 0);
     if (res >= 0) {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.bytes_written += res;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.bytes_written += res;
         pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
 
         // Decrement any partial IOV's and complete any finished resp's.
         _transmit_post(c, res);
@@ -2880,10 +2942,15 @@ static enum transmit_result transmit_udp(conn *c) {
     res = sendmsg(c->sfd, &msg, 0);
 #endif
     if (res >= 0) {
+#ifdef COS_MEMCACHED
+        sync_lock_take(&c->thread->stats.mutex);
+        c->thread->stats.bytes_written += res;
+        sync_lock_release(&c->thread->stats.mutex);
+#else
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.bytes_written += res;
         pthread_mutex_unlock(&c->thread->stats.mutex);
-
+#endif
         // Ignore the header size from forwarding the IOV's
         res -= UDP_HEADER_SIZE;
 
@@ -2970,9 +3037,15 @@ static int read_into_chunked_item(conn *c) {
             res = c->read(c, ch->data + ch->used,
                     (unused > c->rlbytes ? c->rlbytes : unused));
             if (res > 0) {
+#ifdef COS_MEMCACHED
+                sync_lock_take(&c->thread->stats.mutex);
+                c->thread->stats.bytes_read += res;
+                sync_lock_release(&c->thread->stats.mutex);
+#else
                 pthread_mutex_lock(&c->thread->stats.mutex);
                 c->thread->stats.bytes_read += res;
                 pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
                 ch->used += res;
                 total += res;
                 c->rlbytes -= res;
@@ -3198,9 +3271,15 @@ static void drive_machine(conn *c) {
                 // flush response pipe on yield.
                 conn_set_state(c, conn_mwrite);
             } else {
+#ifdef COS_MEMCACHED
+                sync_lock_take(&c->thread->stats.mutex);
+                c->thread->stats.conn_yields++;
+                sync_lock_release(&c->thread->stats.mutex);
+#else
                 pthread_mutex_lock(&c->thread->stats.mutex);
                 c->thread->stats.conn_yields++;
                 pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
                 if (c->rbytes > 0) {
                     /* We have already read in data into the input buffer,
                        so libevent will most likely not signal read events
@@ -3253,9 +3332,15 @@ static void drive_machine(conn *c) {
                 /*  now try reading from the socket */
                 res = c->read(c, c->ritem, c->rlbytes);
                 if (res > 0) {
+#ifdef COS_MEMCACHED
+                    sync_lock_take(&c->thread->stats.mutex);
+                    c->thread->stats.bytes_read += res;
+                    sync_lock_release(&c->thread->stats.mutex);
+#else
                     pthread_mutex_lock(&c->thread->stats.mutex);
                     c->thread->stats.bytes_read += res;
                     pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
                     if (c->rcurr == c->ritem) {
                         c->rcurr += res;
                     }
@@ -3331,9 +3416,15 @@ static void drive_machine(conn *c) {
             /*  now try reading from the socket */
             res = c->read(c, c->rbuf, c->rsize > c->sbytes ? c->sbytes : c->rsize);
             if (res > 0) {
+#ifdef COS_MEMCACHED
+                sync_lock_take(&c->thread->stats.mutex);
+                c->thread->stats.bytes_read += res;
+                sync_lock_release(&c->thread->stats.mutex);
+#else
                 pthread_mutex_lock(&c->thread->stats.mutex);
                 c->thread->stats.bytes_read += res;
                 pthread_mutex_unlock(&c->thread->stats.mutex);
+#endif
                 c->sbytes -= res;
                 break;
             }

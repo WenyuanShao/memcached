@@ -16,6 +16,7 @@
 
 #ifdef COS_MEMCACHED
 #include "../cos_adapter/cos_mc_adapter.h"
+#include <sync_lock.h>
 #else
 #include <event.h>
 #endif
@@ -352,7 +353,11 @@ struct slab_stats {
  * Stats stored per-thread.
  */
 struct thread_stats {
+#ifdef COS_MEMCACHED
+    struct sync_lock mutex;
+#else
     pthread_mutex_t   mutex;
+#endif
 #define X(name) uint64_t    name;
     THREAD_STATS_FIELDS
 #ifdef EXTSTORE
@@ -999,8 +1004,13 @@ int stop_conn_timeout_thread(void);
 #define refcount_decr(it) --(it->refcount)
 void STATS_LOCK(void);
 void STATS_UNLOCK(void);
+#ifdef COS_MEMCACHED
+#define THR_STATS_LOCK(c) sync_lock_take(&c->thread->stats.mutex)
+#define THR_STATS_UNLOCK(c) sync_lock_release(&c->thread->stats.mutex)
+#else
 #define THR_STATS_LOCK(c) pthread_mutex_lock(&c->thread->stats.mutex)
 #define THR_STATS_UNLOCK(c) pthread_mutex_unlock(&c->thread->stats.mutex)
+#endif
 void threadlocal_stats_reset(void);
 void threadlocal_stats_aggregate(struct thread_stats *stats);
 void slab_stats_aggregate(struct thread_stats *stats, struct slab_stats *out);
