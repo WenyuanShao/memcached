@@ -213,6 +213,9 @@ rel_time_t realtime(const time_t exptime) {
 }
 
 static void stats_init(void) {
+#ifdef COS_MEMCACHED
+    cos_mc_stats_lock_init();
+#endif
     memset(&stats, 0, sizeof(struct stats));
     memset(&stats_state, 0, sizeof(struct stats_state));
     stats_state.accepting_conns = true; /* assuming we start in this state. */
