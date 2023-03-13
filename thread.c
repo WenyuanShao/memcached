@@ -85,6 +85,11 @@ pthread_mutex_t atomics_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct sync_lock stats_lock;
 static struct sync_lock *item_locks;
 static struct sync_lock worker_hang_lock;
+
+void cos_mc_stats_lock_init(void)
+{
+    sync_lock_init(&stats_lock);
+}
 #else
 static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -1157,7 +1162,6 @@ void memcached_thread_init(int nthreads, void *arg) {
     sync_lock_init(&cas_id_lock);
     sync_lock_init(&stats_sizes_lock);
 
-    sync_lock_init(&stats_lock);
     sync_lock_init(&conn_lock);
     sync_lock_init(&init_lock);
 #else
