@@ -1135,6 +1135,11 @@ void slab_stats_aggregate(struct thread_stats *stats, struct slab_stats *out) {
     }
 }
 
+#ifdef COS_MEMCACHED
+extern struct sync_lock cas_id_lock;
+extern struct sync_lock stats_sizes_lock;
+#endif
+
 /*
  * Initializes the thread subsystem, creating various worker threads.
  *
@@ -1148,6 +1153,9 @@ void memcached_thread_init(int nthreads, void *arg) {
         sync_lock_init(&lru_locks[i]);
     }
     sync_lock_init(&worker_hang_lock);
+
+    sync_lock_init(&cas_id_lock);
+    sync_lock_init(&stats_sizes_lock);
 
     sync_lock_init(&stats_lock);
     sync_lock_init(&conn_lock);

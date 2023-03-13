@@ -65,8 +65,15 @@ static uint64_t cas_id = 0;
 static volatile int do_run_lru_maintainer_thread = 0;
 static int lru_maintainer_initialized = 0;
 static pthread_mutex_t lru_maintainer_lock = PTHREAD_MUTEX_INITIALIZER;
+
+#ifdef COS_MEMCACHED
+#include <sync_lock.h>
+struct sync_lock cas_id_lock;
+struct sync_lock stats_sizes_lock;
+#else
 static pthread_mutex_t cas_id_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t stats_sizes_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 void item_stats_reset(void) {
     int i;
@@ -116,16 +123,32 @@ static uint64_t lru_total_bumps_dropped(void);
 /* Get the next CAS id for a new item. */
 /* TODO: refactor some atomics for this. */
 uint64_t get_cas_id(void) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&cas_id_lock);
+#else
     pthread_mutex_lock(&cas_id_lock);
+#endif
     uint64_t next_id = ++cas_id;
+#ifdef COS_MEMCACHED
+    sync_lock_release(&cas_id_lock);
+#else
     pthread_mutex_unlock(&cas_id_lock);
+#endif
     return next_id;
 }
 
 void set_cas_id(uint64_t new_cas) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&cas_id_lock);
+#else
     pthread_mutex_lock(&cas_id_lock);
+#endif
     cas_id = new_cas;
+#ifdef COS_MEMCACHED
+    sync_lock_release(&cas_id_lock);
+#else
     pthread_mutex_unlock(&cas_id_lock);
+#endif
 }
 
 int item_is_flushed(item *it) {
@@ -940,10 +963,18 @@ void item_stats(ADD_STAT add_stats, void *c) {
 
 bool item_stats_sizes_status(void) {
     bool ret = false;
+#ifdef COS_MEMCACHED
+    sync_lock_take(&stats_sizes_lock);
+#else
     mutex_lock(&stats_sizes_lock);
+#endif
     if (stats_sizes_hist != NULL)
         ret = true;
+    #ifdef COS_MEMCACHED
+    sync_lock_release(&stats_sizes_lock);
+#else
     mutex_unlock(&stats_sizes_lock);
+#endif
     return ret;
 }
 
@@ -956,7 +987,11 @@ void item_stats_sizes_init(void) {
 }
 
 void item_stats_sizes_enable(ADD_STAT add_stats, void *c) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&stats_sizes_lock);
+#else
     mutex_lock(&stats_sizes_lock);
+#endif
     if (!settings.use_cas) {
         APPEND_STAT("sizes_status", "error", "");
         APPEND_STAT("sizes_error", "cas_support_disabled", "");
@@ -971,17 +1006,29 @@ void item_stats_sizes_enable(ADD_STAT add_stats, void *c) {
     } else {
         APPEND_STAT("sizes_status", "enabled", "");
     }
+#ifdef COS_MEMCACHED
+    sync_lock_release(&stats_sizes_lock);
+#else
     mutex_unlock(&stats_sizes_lock);
+#endif
 }
 
 void item_stats_sizes_disable(ADD_STAT add_stats, void *c) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&stats_sizes_lock);
+#else
     mutex_lock(&stats_sizes_lock);
+#endif
     if (stats_sizes_hist != NULL) {
         free(stats_sizes_hist);
         stats_sizes_hist = NULL;
     }
     APPEND_STAT("sizes_status", "disabled", "");
+#ifdef COS_MEMCACHED
+    sync_lock_release(&stats_sizes_lock);
+#else
     mutex_unlock(&stats_sizes_lock);
+#endif
 }
 
 void item_stats_sizes_add(item *it) {
@@ -1012,7 +1059,11 @@ void item_stats_sizes_remove(item *it) {
  * which don't change.
  */
 void item_stats_sizes(ADD_STAT add_stats, void *c) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&stats_sizes_lock);
+#else
     mutex_lock(&stats_sizes_lock);
+#endif
 
     if (stats_sizes_hist != NULL) {
         int i;
@@ -1028,7 +1079,11 @@ void item_stats_sizes(ADD_STAT add_stats, void *c) {
     }
 
     add_stats(NULL, 0, NULL, 0, c);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&stats_sizes_lock);
+#else
     mutex_unlock(&stats_sizes_lock);
+#endif
 }
 
 /** wrapper around assoc_find which does the lazy expiration logic */

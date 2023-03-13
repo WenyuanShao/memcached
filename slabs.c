@@ -53,11 +53,18 @@ static size_t mem_avail = 0;
 #ifdef EXTSTORE
 static void *storage  = NULL;
 #endif
+#ifdef COS_MEMCACHED
+#include <sync_lock.h>
+static struct sync_lock slabs_lock;
+// static struct sync_lock slabs_rebalance_lock;
+static pthread_mutex_t slabs_rebalance_lock = PTHREAD_MUTEX_INITIALIZER;
+#else 
 /**
  * Access to the slab allocator is protected by this lock
  */
 static pthread_mutex_t slabs_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t slabs_rebalance_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 /*
  * Forward Declarations
@@ -216,6 +223,10 @@ void slabs_init(const size_t limit, const double factor, const bool prealloc, co
     bool __attribute__ ((unused)) do_slab_prealloc = false;
 
     mem_limit = limit;
+#ifdef COS_MEMCACHED
+    sync_lock_init(&slabs_lock);
+//     sync_lock_init(&slabs_rebalance_lock);
+#endif
 
     if (prealloc && mem_base_external == NULL) {
         mem_base = alloc_large_chunk(mem_limit);
@@ -527,7 +538,11 @@ static void do_slabs_free(void *ptr, const size_t size, unsigned int id) {
  */
 void fill_slab_stats_automove(slab_stats_automove *am) {
     int n;
+#ifdef COS_MEMCACHED
+    sync_lock_take(&slabs_lock);
+#else
     pthread_mutex_lock(&slabs_lock);
+#endif
     for (n = 0; n < MAX_NUMBER_OF_SLAB_CLASSES; n++) {
         slabclass_t *p = &slabclass[n];
         slab_stats_automove *cur = &am[n];
@@ -536,7 +551,11 @@ void fill_slab_stats_automove(slab_stats_automove *am) {
         cur->total_pages = p->slabs;
         cur->chunk_size = p->size;
     }
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
     pthread_mutex_unlock(&slabs_lock);
+#endif
 }
 
 /* TODO: slabs_available_chunks should grow up to encompass this.
@@ -544,11 +563,19 @@ void fill_slab_stats_automove(slab_stats_automove *am) {
  */
 unsigned int global_page_pool_size(bool *mem_flag) {
     unsigned int ret = 0;
+#ifdef COS_MEMCACHED
+    sync_lock_take(&slabs_lock);
+#else
     pthread_mutex_lock(&slabs_lock);
+#endif
     if (mem_flag != NULL)
         *mem_flag = mem_malloced >= mem_limit ? true : false;
     ret = slabclass[SLAB_GLOBAL_PAGE_POOL].slabs;
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
     pthread_mutex_unlock(&slabs_lock);
+#endif
     return ret;
 }
 
@@ -656,23 +683,46 @@ static void memory_release() {
 void *slabs_alloc(size_t size, unsigned int id,
         unsigned int flags) {
     void *ret;
-
+#ifdef COS_MEMCACHED
+    sync_lock_take(&slabs_lock);
+#else
     pthread_mutex_lock(&slabs_lock);
+#endif
     ret = do_slabs_alloc(size, id, flags);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
     pthread_mutex_unlock(&slabs_lock);
+#endif
     return ret;
 }
 
 void slabs_free(void *ptr, size_t size, unsigned int id) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&slabs_lock);
+#else
     pthread_mutex_lock(&slabs_lock);
+#endif
     do_slabs_free(ptr, size, id);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
     pthread_mutex_unlock(&slabs_lock);
+#endif
 }
 
 void slabs_stats(ADD_STAT add_stats, void *c) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&slabs_lock);
+#else
     pthread_mutex_lock(&slabs_lock);
+#endif
     do_slabs_stats(add_stats, c);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
     pthread_mutex_unlock(&slabs_lock);
+#endif
 }
 
 static bool do_slabs_adjust_mem_limit(size_t new_mem_limit) {
@@ -688,9 +738,17 @@ static bool do_slabs_adjust_mem_limit(size_t new_mem_limit) {
 
 bool slabs_adjust_mem_limit(size_t new_mem_limit) {
     bool ret;
+#ifdef COS_MEMCACHED
+    sync_lock_take(&slabs_lock);
+#else
     pthread_mutex_lock(&slabs_lock);
+#endif
     ret = do_slabs_adjust_mem_limit(new_mem_limit);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
     pthread_mutex_unlock(&slabs_lock);
+#endif
     return ret;
 }
 
@@ -699,14 +757,22 @@ unsigned int slabs_available_chunks(const unsigned int id, bool *mem_flag,
     unsigned int ret;
     slabclass_t *p;
 
+#ifdef COS_MEMCACHED
+    sync_lock_take(&slabs_lock);
+#else
     pthread_mutex_lock(&slabs_lock);
+#endif
     p = &slabclass[id];
     ret = p->sl_curr;
     if (mem_flag != NULL)
         *mem_flag = mem_malloced >= mem_limit ? true : false;
     if (chunks_perslab != NULL)
         *chunks_perslab = p->perslab;
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
     pthread_mutex_unlock(&slabs_lock);
+#endif
     return ret;
 }
 
@@ -717,11 +783,19 @@ unsigned int slabs_available_chunks(const unsigned int id, bool *mem_flag,
  * into callbacks when an interface becomes more obvious.
  */
 void slabs_mlock(void) {
+#ifdef COS_MEMCACHED
+    sync_lock_take(&slabs_lock);
+#else
     pthread_mutex_lock(&slabs_lock);
+#endif
 }
 
 void slabs_munlock(void) {
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
     pthread_mutex_unlock(&slabs_lock);
+#endif
 }
 
 static pthread_cond_t slab_rebalance_cond = PTHREAD_COND_INITIALIZER;
@@ -731,8 +805,11 @@ static int slab_rebalance_start(void) {
     slabclass_t *s_cls;
     int no_go = 0;
 
+#ifdef COS_MEMCACHED
+    sync_lock_take(&slabs_lock);
+#else
     pthread_mutex_lock(&slabs_lock);
-
+#endif
     if (slab_rebal.s_clsid < SLAB_GLOBAL_PAGE_POOL ||
         slab_rebal.s_clsid > power_largest  ||
         slab_rebal.d_clsid < SLAB_GLOBAL_PAGE_POOL ||
@@ -750,7 +827,11 @@ static int slab_rebalance_start(void) {
         no_go = -3;
 
     if (no_go != 0) {
-        pthread_mutex_unlock(&slabs_lock);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
+    pthread_mutex_unlock(&slabs_lock);
+#endif
         return no_go; /* Should use a wrapper function... */
     }
 
@@ -776,7 +857,11 @@ static int slab_rebalance_start(void) {
         fprintf(stderr, "Started a slab rebalance\n");
     }
 
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
     pthread_mutex_unlock(&slabs_lock);
+#endif
 
     STATS_LOCK();
     stats_state.slab_reassign_running = true;
@@ -867,7 +952,11 @@ static int slab_rebalance_move(void) {
 
     // skip acquiring the slabs lock for items we've already fully processed.
     if (slab_rebal.completed[offset] == 0) {
-        pthread_mutex_lock(&slabs_lock);
+#ifdef COS_MEMCACHED
+    sync_lock_take(&slabs_lock);
+#else
+    pthread_mutex_lock(&slabs_lock);
+#endif
         hv = 0;
         hold_lock = NULL;
         item *it = slab_rebal.slab_pos;
@@ -925,9 +1014,17 @@ static int slab_rebalance_move(void) {
                             // Only safe to hold slabs lock because refcount
                             // can't drop to 0 until we release item lock.
                             STORAGE_delete(storage, it);
-                            pthread_mutex_unlock(&slabs_lock);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
+    pthread_mutex_unlock(&slabs_lock);
+#endif
                             do_item_unlink(it, hv);
+#ifdef COS_MEMCACHED
+                            sync_lock_take(&slabs_lock);
+#else
                             pthread_mutex_lock(&slabs_lock);
+#endif
                         }
                         status = MOVE_BUSY;
                     } else {
@@ -992,7 +1089,11 @@ static int slab_rebalance_move(void) {
                     /* Was whatever it was, and we have memory for it. */
                     save_item = 1;
                 }
-                pthread_mutex_unlock(&slabs_lock);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
+    pthread_mutex_unlock(&slabs_lock);
+#endif
                 if (save_item) {
                     if (ch == NULL) {
                         assert((new_it->it_flags & ITEM_CHUNKED) == 0);
@@ -1059,7 +1160,11 @@ static int slab_rebalance_move(void) {
 
                 }
                 item_trylock_unlock(hold_lock);
+#ifdef COS_MEMCACHED
+                sync_lock_take(&slabs_lock);
+#else
                 pthread_mutex_lock(&slabs_lock);
+#endif
                 /* Always remove the ntotal, as we added it in during
                  * do_slabs_alloc() when copying the item.
                  */
@@ -1081,7 +1186,11 @@ static int slab_rebalance_move(void) {
                 break;
         }
 
-        pthread_mutex_unlock(&slabs_lock);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
+    pthread_mutex_unlock(&slabs_lock);
+#endif
     }
 
     // Note: slab_rebal.* is occasionally protected under slabs_lock, but
@@ -1116,7 +1225,11 @@ static void slab_rebalance_finish(void) {
     uint32_t chunk_rescues;
     uint32_t busy_deletes;
 
+#ifdef COS_MEMCACHED
+    sync_lock_take(&slabs_lock);
+#else
     pthread_mutex_lock(&slabs_lock);
+#endif
 
     s_cls = &slabclass[slab_rebal.s_clsid];
     d_cls = &slabclass[slab_rebal.d_clsid];
@@ -1179,7 +1292,11 @@ static void slab_rebalance_finish(void) {
     slab_rebalance_signal = 0;
 
     free(slab_rebal.completed);
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
     pthread_mutex_unlock(&slabs_lock);
+#endif
 
     STATS_LOCK();
     stats.slabs_moved++;
@@ -1279,10 +1396,18 @@ static enum reassign_result_type do_slabs_reassign(int src, int dst) {
         dst < SLAB_GLOBAL_PAGE_POOL || dst > power_largest)
         return REASSIGN_BADCLASS;
 
+#ifdef COS_MEMCACHED
+    sync_lock_take(&slabs_lock);
+#else
     pthread_mutex_lock(&slabs_lock);
+#endif
     if (slabclass[src].slabs < 2)
         nospare = true;
+#ifdef COS_MEMCACHED
+    sync_lock_release(&slabs_lock);
+#else
     pthread_mutex_unlock(&slabs_lock);
+#endif
     if (nospare)
         return REASSIGN_NOSPARE;
 
