@@ -4852,7 +4852,11 @@ int main (int argc, char **argv) {
     int c;
     bool lock_memory = false;
     bool do_daemonize = false;
+#ifdef COS_MEMCACHED
+    bool preallocate = true;
+#else
     bool preallocate = false;
+#endif
     int maxcore = 0;
     char *username = NULL;
     char *pid_file = NULL;

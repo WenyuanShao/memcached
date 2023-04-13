@@ -115,6 +115,10 @@ unsigned int slabs_size(const int clsid) {
 static void * alloc_large_chunk(const size_t limit)
 {
     void *ptr = NULL;
+#ifdef COS_MEMCACHED
+    ptr = malloc(limit);
+    return ptr;
+#endif
 #if defined(__linux__) && defined(MADV_HUGEPAGE)
     size_t pagesize = 0;
     FILE *fp;
