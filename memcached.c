@@ -6339,6 +6339,8 @@ int main (int argc, char **argv) {
     /* enter the event loop */
     while (!stop_main_loop) {
 #ifdef COS_MEMCACHED
+extern void cos_init_cache_lock(void);
+	cos_init_cache_lock();
 	return 0;
 #else
         if (event_base_loop(main_base, EVLOOP_ONCE) != 0) {

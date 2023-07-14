@@ -92,7 +92,7 @@ void* cache_alloc(cache_t *cache) {
 #endif
     return ret;
 }
-
+static struct sync_lock _malloc_lock;
 void* do_cache_alloc(cache_t *cache) {
     void *ret;
     void *object;
@@ -102,7 +102,13 @@ void* do_cache_alloc(cache_t *cache) {
         object = get_object(ret);
         cache->freecurr--;
     } else if (cache->limit == 0 || cache->total < cache->limit) {
+#ifdef COS_MEMCACHED
+	sync_lock_take(&_malloc_lock);
         object = ret = malloc(cache->bufsize);
+	sync_lock_release(&_malloc_lock);
+#else
+	object = ret = malloc(cache->bufsize);
+#endif
         if (ret != NULL) {
             object = get_object(ret);
 
@@ -165,3 +171,10 @@ void do_cache_free(cache_t *cache, void *ptr) {
     }
 }
 
+#ifdef COS_MEMCACHED
+void
+cos_init_cache_lock(void)
+{
+	sync_lock_init(&_malloc_lock);
+}
+#endif
