@@ -2268,6 +2268,7 @@ item* limited_get(char *key, size_t nkey, conn *c, uint32_t exptime, bool should
 // items.c.
 item* limited_get_locked(char *key, size_t nkey, conn *c, bool do_update, uint32_t *hv, bool *overflow) {
     item *it;
+    assert(0);
     it = item_get_locked(key, nkey, c, do_update, hv);
     if (it && it->refcount > IT_REFCOUNT_LIMIT) {
         do_item_remove(it);
@@ -2301,6 +2302,7 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
     int res;
     item *it;
 
+    assert(0);
     it = do_item_get(key, nkey, hv, c, DONT_UPDATE);
     if (!it) {
         return DELTA_ITEM_NOT_FOUND;
@@ -3474,7 +3476,7 @@ static void drive_machine(conn *c) {
 #ifndef COS_MEMCACHED
                 event_del(&c->event);
 #endif
-
+                assert(0);
                 stop = true;
                 break;
             }

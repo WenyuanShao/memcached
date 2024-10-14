@@ -1327,6 +1327,7 @@ static void *slab_rebalance_thread(void *arg) {
     /* So we first pass into cond_wait with the mutex held */
     mutex_lock(&slabs_rebalance_lock);
 
+    assert(0);
     /* Must finish moving page before stopping */
     while (slab_rebalance_signal || do_run_slab_rebalance_thread) {
         if (slab_rebalance_signal == 1) {

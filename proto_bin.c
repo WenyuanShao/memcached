@@ -35,6 +35,7 @@ static void write_bin_miss_response(conn *c, char *key, size_t nkey);
 void complete_nread_binary(conn *c) {
     assert(c != NULL);
     assert(c->cmd >= 0);
+    assert(0);
 
     switch(c->substate) {
     case bin_read_set_value:
@@ -774,6 +775,7 @@ static void bin_list_sasl_mechs(conn *c) {
 
 static void process_bin_sasl_auth(conn *c) {
     // Guard for handling disabled SASL on the server.
+    assert(0);
     if (!settings.sasl) {
         write_bin_error(c, PROTOCOL_BINARY_RESPONSE_UNKNOWN_COMMAND, NULL,
                         c->binary_header.request.bodylen
@@ -1354,6 +1356,7 @@ static void process_bin_delete(conn *c) {
     item *it;
     uint32_t hv;
 
+    assert(0);
     assert(c != NULL);
     char* key = binary_get_key(c);
     size_t nkey = c->binary_header.request.keylen;

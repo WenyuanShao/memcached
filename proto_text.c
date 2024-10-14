@@ -1358,6 +1358,7 @@ static void process_mget_command(conn *c, token_t *tokens, const size_t ntokens)
         } else {
             // Failed to set up extstore fetch.
             if (of.locked) {
+		assert(0);
                 do_item_remove(it);
             } else {
                 item_remove(it);
@@ -1435,6 +1436,7 @@ static void process_mget_command(conn *c, token_t *tokens, const size_t ntokens)
     return;
 error:
     if (it) {
+	assert(0);
         do_item_remove(it);
         if (of.locked) {
             item_unlock(hv);
@@ -1607,6 +1609,7 @@ static void process_mset_command(conn *c, token_t *tokens, const size_t ntokens)
         // NOTE: only if SET mode?
         it = item_get_locked(key, nkey, c, DONT_UPDATE, &hv);
         if (it) {
+	    assert(0);
             do_item_unlink(it, hv);
             STORAGE_delete(c->thread->storage, it);
             do_item_remove(it);
@@ -1792,6 +1795,7 @@ static void process_mdelete_command(conn *c, token_t *tokens, const size_t ntoke
     }
 cleanup:
     if (it) {
+	assert(0);
         do_item_remove(it);
     }
     // Item is always returned locked, even if missing.
@@ -2010,6 +2014,7 @@ static void process_marithmetic_command(conn *c, token_t *tokens, const size_t n
             p += vlen;
         }
 
+	assert(0);
         do_item_remove(it);
     } else {
         // No item to handle. still need to return opaque/key tokens
@@ -2041,6 +2046,7 @@ static void process_marithmetic_command(conn *c, token_t *tokens, const size_t n
     conn_set_state(c, conn_new_cmd);
     return;
 error:
+    assert(0);
     if (it != NULL)
         do_item_remove(it);
     if (locked)
@@ -2328,7 +2334,7 @@ static void process_delete_command(conn *c, token_t *tokens, const size_t ntoken
         c->thread->stats.slab_stats[ITEM_clsid(it)].delete_hits++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
 #endif
-
+	assert(0);
         do_item_unlink(it, hv);
         STORAGE_delete(c->thread->storage, it);
         do_item_remove(it);      /* release our reference */

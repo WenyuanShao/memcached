@@ -188,6 +188,7 @@ static void crawler_expired_eval(crawler_module_t *cm, item *search, uint32_t hv
     pthread_mutex_lock(&d->lock);
     crawlerstats_t *s = &d->crawlerstats[i];
     int is_flushed = item_is_flushed(search);
+    assert(0);
 #ifdef EXTSTORE
     bool is_valid = true;
     if (search->it_flags & ITEM_HDR) {

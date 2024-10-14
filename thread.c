@@ -83,7 +83,7 @@ pthread_mutex_t atomics_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Lock for global stats */
 #ifdef COS_MEMCACHED
 static struct sync_lock stats_lock;
-static struct sync_lock *item_locks;
+static struct sync_lock item_locks[32768];
 static struct sync_lock worker_hang_lock;
 
 void cos_mc_stats_lock_init(void)
@@ -137,8 +137,8 @@ static void thread_libevent_process(evutil_socket_t fd, short which, void *arg);
  */
 
 void item_lock(uint32_t hv) {
+	assert ((hv & hashmask(item_lock_hashpower)) < 32768);
 #ifdef COS_MEMCACHED
-//     cos_printf("try sync lock\n");
     sync_lock_take(&item_locks[hv & hashmask(item_lock_hashpower)]);
 #else
     mutex_lock(&item_locks[hv & hashmask(item_lock_hashpower)]);
@@ -1201,7 +1201,7 @@ void memcached_thread_init(int nthreads, void *arg) {
 
 //     cos_printf("initializa item locks\n");
 #ifdef COS_MEMCACHED
-    item_locks = calloc(item_lock_count, sizeof(struct sync_lock));
+    //item_locks = calloc(item_lock_count, sizeof(struct sync_lock));
 #else
     item_locks = calloc(item_lock_count, sizeof(pthread_mutex_t));
 #endif

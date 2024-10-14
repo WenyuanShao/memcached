@@ -1478,6 +1478,7 @@ static bool lru_maintainer_bumps(void) {
     unsigned int size;
     unsigned int todo;
     bool bumped = false;
+    assert(0);
     pthread_mutex_lock(&bump_buf_lock);
     for (b = bump_buf_head; b != NULL; b=b->next) {
         pthread_mutex_lock(&b->mutex);
@@ -1510,6 +1511,7 @@ static bool lru_maintainer_bumps(void) {
 static uint64_t lru_total_bumps_dropped(void) {
     uint64_t total = 0;
     lru_bump_buf *b;
+    assert(0);
     pthread_mutex_lock(&bump_buf_lock);
     for (b = bump_buf_head; b != NULL; b=b->next) {
         pthread_mutex_lock(&b->mutex);
@@ -1631,6 +1633,7 @@ static void lru_maintainer_crawler_check(struct crawler_expired_data *cdata, log
     memset(todo, 0, sizeof(uint8_t) * POWER_LARGEST);
     bool do_run = false;
     unsigned int tocrawl_limit = 0;
+    assert(0);
 
     // TODO: If not segmented LRU, skip non-cold
     for (i = POWER_SMALLEST; i < POWER_LARGEST; i++) {
@@ -1744,6 +1747,7 @@ static pthread_t lru_maintainer_tid;
 #define MIN_LRU_MAINTAINER_SLEEP 1000
 
 static void *lru_maintainer_thread(void *arg) {
+    assert(0);
     slab_automove_reg_t *sam = &slab_automove_default;
 #ifdef EXTSTORE
     void *storage = arg;
@@ -1866,6 +1870,7 @@ static void *lru_maintainer_thread(void *arg) {
 
 int stop_lru_maintainer_thread(void) {
     int ret;
+    assert(0);
     pthread_mutex_lock(&lru_maintainer_lock);
     /* LRU thread is a sleep loop, will die on its own */
     do_run_lru_maintainer_thread = 0;
@@ -1881,6 +1886,7 @@ int stop_lru_maintainer_thread(void) {
 int start_lru_maintainer_thread(void *arg) {
     int ret;
 
+    assert(0);
     pthread_mutex_lock(&lru_maintainer_lock);
     do_run_lru_maintainer_thread = 1;
     settings.lru_maintainer_thread = true;
@@ -1898,10 +1904,12 @@ int start_lru_maintainer_thread(void *arg) {
 
 /* If we hold this lock, crawler can't wake up or move */
 void lru_maintainer_pause(void) {
+    assert(0);
     pthread_mutex_lock(&lru_maintainer_lock);
 }
 
 void lru_maintainer_resume(void) {
+    assert(0);
     pthread_mutex_unlock(&lru_maintainer_lock);
 }
 

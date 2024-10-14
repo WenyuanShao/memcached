@@ -881,6 +881,7 @@ struct conn {
     u16_t cos_r_sz;
     char *cos_w_buf; /* Memcached write data back to this buffer */
     u16_t cos_w_sz;
+    u16_t cos_max_sz;
 #endif
 };
 
